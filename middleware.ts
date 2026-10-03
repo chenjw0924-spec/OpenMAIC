@@ -49,8 +49,14 @@ export async function middleware(request: NextRequest) {
     return next(request, identity);
   }
 
-  // Whitelist: access-code endpoints, health check
-  if (pathname.startsWith('/api/access-code/') || pathname === '/api/health') {
+  // Whitelist: access-code endpoints, account sign-in, health check. The
+  // auth routes are the gate's replacement, so they must stay reachable
+  // while ACCESS_CODE is still set (the transition window) and after.
+  if (
+    pathname.startsWith('/api/access-code/') ||
+    pathname.startsWith('/api/auth/') ||
+    pathname === '/api/health'
+  ) {
     return next(request, identity);
   }
 

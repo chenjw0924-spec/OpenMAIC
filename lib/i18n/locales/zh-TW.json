@@ -2148,5 +2148,29 @@
         "materialExtraction": null
       }
     }
+  },
+  "auth": {
+    "signIn": "登入",
+    "signOut": "登出",
+    "account": "我的帳號",
+    "backHome": "返回首頁",
+    "title": "登入 OpenMAIC",
+    "subtitle": "登入後可跨裝置同步你的課程庫",
+    "emailPlaceholder": "輸入你的電子郵件地址",
+    "sendLink": "傳送登入連結",
+    "sentTitle": "登入郵件已傳送",
+    "sentHint": "請查收郵件並點擊其中的連結完成登入，連結 15 分鐘內有效。",
+    "resend": "沒收到？重新傳送",
+    "or": "或",
+    "continueGithub": "使用 GitHub 登入",
+    "noProviders": "目前站點未設定登入方式，請聯絡站長。",
+    "guestNotice": "不登入也可以直接生成課程；登入後，訪客課程會自動合併到你的帳號。",
+    "signingIn": "登入成功，正在為你準備課程庫…",
+    "claimSuccess": "已把 {{count}} 門訪客課程合併到你的帳號",
+    "sendFailed": "郵件傳送失敗，請稍後重試",
+    "invalidEmail": "請輸入有效的電子郵件地址",
+    "errorInvalidToken": "登入連結無效或已過期，請重新傳送",
+    "errorGithub": "GitHub 登入失敗，請重試",
+    "errorGeneric": "登入失敗，請重試"
   }
 }

@@ -2148,5 +2148,29 @@
         "materialExtraction": null
       }
     }
+  },
+  "auth": {
+    "signIn": "登录",
+    "signOut": "退出登录",
+    "account": "我的账号",
+    "backHome": "返回首页",
+    "title": "登录 OpenMAIC",
+    "subtitle": "登录后可跨设备同步你的课程库",
+    "emailPlaceholder": "输入你的邮箱地址",
+    "sendLink": "发送登录链接",
+    "sentTitle": "登录邮件已发送",
+    "sentHint": "请查收邮件并点击其中的链接完成登录，链接 15 分钟内有效。",
+    "resend": "没收到？重新发送",
+    "or": "或",
+    "continueGithub": "使用 GitHub 登录",
+    "noProviders": "当前站点未配置登录方式，请联系站长。",
+    "guestNotice": "不登录也可以直接生成课程；登录后，游客课程会自动合并到你的账号。",
+    "signingIn": "登录成功，正在为你准备课程库…",
+    "claimSuccess": "已把 {{count}} 门游客课程合并到你的账号",
+    "sendFailed": "邮件发送失败，请稍后重试",
+    "invalidEmail": "请输入有效的邮箱地址",
+    "errorInvalidToken": "登录链接无效或已过期，请重新发送",
+    "errorGithub": "GitHub 登录失败，请重试",
+    "errorGeneric": "登录失败，请重试"
   }
 }

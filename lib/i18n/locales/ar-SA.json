@@ -2148,5 +2148,29 @@
         "materialExtraction": null
       }
     }
+  },
+  "auth": {
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "account": "My account",
+    "backHome": "Back to home",
+    "title": "Sign in to OpenMAIC",
+    "subtitle": "Sign in to sync your course library across devices",
+    "emailPlaceholder": "Enter your email address",
+    "sendLink": "Send sign-in link",
+    "sentTitle": "Sign-in email sent",
+    "sentHint": "Check your inbox and click the link to finish signing in. The link expires in 15 minutes.",
+    "resend": "Didn't get it? Resend",
+    "or": "or",
+    "continueGithub": "Continue with GitHub",
+    "noProviders": "No sign-in method is configured on this site. Please contact the owner.",
+    "guestNotice": "You can generate courses without signing in; they merge into your account when you do.",
+    "signingIn": "Signed in, preparing your library…",
+    "claimSuccess": "Merged {{count}} guest course(s) into your account",
+    "sendFailed": "Failed to send the email. Please try again later.",
+    "invalidEmail": "Please enter a valid email address",
+    "errorInvalidToken": "This sign-in link is invalid or has expired. Please request a new one.",
+    "errorGithub": "GitHub sign-in failed. Please try again.",
+    "errorGeneric": "Sign-in failed. Please try again."
   }
 }

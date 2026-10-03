@@ -187,6 +187,16 @@ async function validateBootConfiguration(): Promise<void> {
   //
   // A registration that throws stops the process too, reported as a startup
   // failure with its stack (it is host code, not a setting).
+  //
+  // This deployment: email/GitHub accounts (app/api/auth/), with the
+  // anonymous cookie kept as the guest fallback. Registered only with
+  // AUTH_SECRET set, so a deployment without accounts (the upstream default)
+  // boots exactly as before.
+  if (process.env.AUTH_SECRET?.trim()) {
+    const { configureOwnerAuthentication } = await import('@/lib/server/identity');
+    const { sessionAuthMethod } = await import('@/lib/server/identity/host/session');
+    configureOwnerAuthentication({ methods: [sessionAuthMethod()] });
+  }
   const { validateOwnerIdentityConfiguration } = await import('@/lib/server/identity/registry');
   runConfigurationCheck(validateOwnerIdentityConfiguration);
 
