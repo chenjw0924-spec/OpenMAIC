@@ -26,7 +26,7 @@ export async function GET(request: Request): Promise<Response> {
   const providers = { email: emailAuthEnabled(), github: githubAuthEnabled() };
   const secret = authSecret();
   const token = readSessionCookie(request.headers);
-  const session = secret && token ? verifySessionToken(token, secret) : undefined;
+  const session = secret && token ? await verifySessionToken(token, secret) : undefined;
   if (!session) {
     return Response.json(
       { user: null, providers },

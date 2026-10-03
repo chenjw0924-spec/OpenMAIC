@@ -65,7 +65,7 @@ export async function GET(request: Request): Promise<Response> {
     const user = await findOrCreateGithubUser(profile);
     return redirect('/login?verified=1', [
       clearStateCookie(),
-      sessionCookieHeader(mintSessionToken(user.id, secret)),
+      sessionCookieHeader(await mintSessionToken(user.id, secret)),
     ]);
   } catch (error) {
     log.error('GitHub sign-in failed', error);

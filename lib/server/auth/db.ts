@@ -265,7 +265,7 @@ export async function issueEmailToken(email: string): Promise<EmailTokenIssue> {
        token_hash = excluded.token_hash,
        expires_at = excluded.expires_at,
        created_at = now()`,
-    [email, hashEmailToken(token)],
+    [email, await hashEmailToken(token)],
   );
   return { status: 'sent', token };
 }
@@ -280,7 +280,7 @@ export async function consumeEmailToken(token: string): Promise<string | undefin
   const pool = await db();
   const result = await pool.query<{ email: string; expires_at: Date }>(
     'DELETE FROM openmaic_auth_email_tokens WHERE token_hash = $1 RETURNING email, expires_at',
-    [hashEmailToken(token)],
+    [await hashEmailToken(token)],
   );
   const row = result.rows[0];
   if (!row || row.expires_at.getTime() <= Date.now()) return undefined;

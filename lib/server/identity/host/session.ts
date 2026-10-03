@@ -62,7 +62,7 @@ function principalFor(uid: string): OwnerPrincipal {
   };
 }
 
-function authenticateHeaders(headers: Headers): OwnerAuthMethodResult {
+async function authenticateHeaders(headers: Headers): Promise<OwnerAuthMethodResult> {
   const token = readSessionCookie(headers);
   if (!token) return { status: 'not-applicable' };
   const secret = authSecret();
@@ -70,14 +70,14 @@ function authenticateHeaders(headers: Headers): OwnerAuthMethodResult {
   // this is unreachable in a sane deployment; if it somehow happens, fail
   // rather than silently treating everyone as signed out.
   if (!secret) throw new Error('session auth method registered without AUTH_SECRET');
-  const session = verifySessionToken(token, secret);
+  const session = await verifySessionToken(token, secret);
   if (!session) return { status: 'not-applicable' };
   const ageSeconds = SESSION_TTL_SECONDS - (session.exp - Math.floor(Date.now() / 1000));
   return {
     status: 'authenticated',
     principal: principalFor(session.uid),
     ...(ageSeconds >= RENEW_AFTER_SECONDS
-      ? { setCookies: [sessionCookieHeader(mintSessionToken(session.uid, secret))] }
+      ? { setCookies: [sessionCookieHeader(await mintSessionToken(session.uid, secret))] }
       : {}),
   };
 }
@@ -95,12 +95,12 @@ export function sessionAuthMethod(): OwnerAuthMethod {
       if (!token) return { status: 'not-applicable' };
       const secret = authSecret();
       if (!secret) throw new Error('session auth method registered without AUTH_SECRET');
-      const session = verifySessionToken(token, secret);
+      const session = await verifySessionToken(token, secret);
       if (!session) return { status: 'not-applicable' };
       const ageSeconds = SESSION_TTL_SECONDS - (session.exp - Math.floor(Date.now() / 1000));
       if (ageSeconds >= RENEW_AFTER_SECONDS) {
         try {
-          cookieStore.set(SESSION_COOKIE, mintSessionToken(session.uid, secret), {
+          cookieStore.set(SESSION_COOKIE, await mintSessionToken(session.uid, secret), {
             httpOnly: true,
             sameSite: 'lax',
             path: '/',

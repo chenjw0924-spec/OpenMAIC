@@ -29,7 +29,7 @@ export async function GET(request: Request): Promise<Response> {
     const email = await consumeEmailToken(token);
     if (!email) return redirect('/login?error=invalid_token');
     const user = await findOrCreateEmailUser(email);
-    return redirect('/login?verified=1', sessionCookieHeader(mintSessionToken(user.id, secret)));
+    return redirect('/login?verified=1', sessionCookieHeader(await mintSessionToken(user.id, secret)));
   } catch {
     return redirect('/login?error=server');
   }
