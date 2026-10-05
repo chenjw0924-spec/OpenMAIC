@@ -5,10 +5,9 @@
  * writes them to disk, and returns serving URL mappings.
  */
 
-import { promises as fs } from 'fs';
 import path from 'path';
 import { createLogger } from '@/lib/logger';
-import { CLASSROOMS_DIR } from '@/lib/server/classroom-storage';
+import { writeClassroomMedia } from '@/lib/server/classroom-storage';
 import { generateImage } from '@/lib/media/image-providers';
 import { generateVideo, normalizeVideoOptions } from '@/lib/media/video-providers';
 import {
@@ -62,10 +61,6 @@ type ServerTransportSpeechAction = SpeechAction & { audioUrl?: string };
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async function ensureDir(dir: string) {
-  await fs.mkdir(dir, { recursive: true });
-}
 
 const DOWNLOAD_TIMEOUT_MS = 120_000; // 2 minutes
 export const DOWNLOAD_MAX_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -132,10 +127,6 @@ export async function downloadToBuffer(url: string): Promise<Buffer> {
   }
 }
 
-function mediaServingUrl(baseUrl: string, classroomId: string, subPath: string): string {
-  return `${baseUrl}/api/classroom-media/${classroomId}/${subPath}`;
-}
-
 // ---------------------------------------------------------------------------
 // Image / Video generation
 // ---------------------------------------------------------------------------
@@ -144,10 +135,8 @@ export async function generateMediaForClassroom(
   outlines: SceneOutline[],
   classroomId: string,
   baseUrl: string,
+  ownerId?: string,
 ): Promise<Record<string, string>> {
-  const mediaDir = path.join(CLASSROOMS_DIR, classroomId, 'media');
-  await ensureDir(mediaDir);
-
   // Collect all media generation requests from outlines
   const requests = outlines.flatMap((o) => o.mediaGenerations ?? []);
   if (requests.length === 0) return {};
@@ -229,8 +218,14 @@ export async function generateMediaForClassroom(
         }
 
         const filename = `${req.elementId}.${ext}`;
-        await fs.writeFile(path.join(mediaDir, filename), buf);
-        mediaMap[req.elementId] = mediaServingUrl(baseUrl, classroomId, `media/${filename}`);
+        await writeClassroomMedia({
+          classroomId,
+          mediaPath: `media/${filename}`,
+          bytes: buf,
+          mime: ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`,
+          ownerId,
+        });
+        mediaMap[req.elementId] = `${baseUrl}/api/classroom-media/${classroomId}/media/${filename}`;
         log.info(`Generated image: ${filename}`);
       } catch (err) {
         log.warn(`Image generation failed for ${req.elementId}:`, err);
@@ -276,8 +271,14 @@ export async function generateMediaForClassroom(
 
         const buf = await downloadToBuffer(result.url);
         const filename = `${req.elementId}.mp4`;
-        await fs.writeFile(path.join(mediaDir, filename), buf);
-        mediaMap[req.elementId] = mediaServingUrl(baseUrl, classroomId, `media/${filename}`);
+        await writeClassroomMedia({
+          classroomId,
+          mediaPath: `media/${filename}`,
+          bytes: buf,
+          mime: 'video/mp4',
+          ownerId,
+        });
+        mediaMap[req.elementId] = `${baseUrl}/api/classroom-media/${classroomId}/media/${filename}`;
         log.info(`Generated video: ${filename}`);
       } catch (err) {
         log.warn(`Video generation failed for ${req.elementId}:`, err);
@@ -474,10 +475,8 @@ export async function generateTTSForClassroom(
   baseUrl: string,
   signal?: AbortSignal,
   onProgress?: (progress: ClassroomTtsProgress) => void | Promise<void>,
+  ownerId?: string,
 ): Promise<ClassroomTtsCoverage> {
-  const audioDir = path.join(CLASSROOMS_DIR, classroomId, 'audio');
-  await ensureDir(audioDir);
-
   // Resolve TTS provider (exclude browser-native-tts and operator force-disabled
   // providers — server precedence, #665).
   const ttsProviderIds = Object.entries(getServerTTSProviders())
@@ -573,11 +572,23 @@ export async function generateTTSForClassroom(
             speechAction.text,
           );
 
-          const filename = `${audioId}.${result.format || format}`;
-          await fs.writeFile(path.join(audioDir, filename), result.audio);
+          const outputFormat = result.format || format;
+          const filename = `${audioId}.${outputFormat}`;
+          await writeClassroomMedia({
+            classroomId,
+            mediaPath: `audio/${filename}`,
+            bytes: result.audio,
+            mime:
+              outputFormat === 'wav'
+                ? 'audio/wav'
+                : outputFormat === 'ogg'
+                  ? 'audio/ogg'
+                  : 'audio/mpeg',
+            ownerId,
+          });
 
           speechAction.audioId = audioId;
-          speechAction.audioUrl = mediaServingUrl(baseUrl, classroomId, `audio/${filename}`);
+          speechAction.audioUrl = `${baseUrl}/api/classroom-media/${classroomId}/audio/${filename}`;
           written += 1;
           consecutiveSuccesses += 1;
           spacingMs = decayTtsSpacing(spacingMs, baseSpacingMs, consecutiveSuccesses);

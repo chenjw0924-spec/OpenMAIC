@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createLogger } from '@/lib/logger';
 import { hasBillableTokens, type NormalizedUsage } from '@/lib/usage/normalize';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 
 const log = createLogger('UsageStorage');
 
@@ -78,6 +79,42 @@ const ZERO_USAGE: NormalizedUsage = {
   reasoningTokens: 0,
 };
 
+let databaseSchemaPromise: Promise<void> | undefined;
+
+async function getUsagePool() {
+  const connectionString = process.env.DATABASE_URL?.trim();
+  if (!connectionString) return null;
+  const provider = await getServerPersistenceProvider(connectionString);
+  databaseSchemaPromise ??= provider.pool
+    .query(
+      `
+      CREATE TABLE IF NOT EXISTS kestack_usage_records (
+        id TEXT PRIMARY KEY,
+        created_at BIGINT NOT NULL,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        model_string TEXT NOT NULL,
+        input_tokens BIGINT NOT NULL DEFAULT 0,
+        output_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+        reasoning_tokens BIGINT NOT NULL DEFAULT 0,
+        quantity DOUBLE PRECISION,
+        unit TEXT
+      )
+    `,
+    )
+    .then(() => undefined)
+    .catch((error) => {
+      databaseSchemaPromise = undefined;
+      throw error;
+    });
+  await databaseSchemaPromise;
+  return provider.pool;
+}
+
 /**
  * Records one generation's usage as a jsonl line. Fire-and-forget: never throws —
  * a logging failure must not break generation.
@@ -127,6 +164,35 @@ export async function recordUsage(
       ...(input.unit ? { unit: input.unit } : {}),
     };
 
+    if (!opts.baseDir) {
+      const pool = await getUsagePool();
+      if (pool) {
+        await pool.query(
+          `INSERT INTO kestack_usage_records
+             (id, created_at, kind, source, provider_id, model_id, model_string,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              reasoning_tokens, quantity, unit)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          [
+            record.id,
+            record.createdAt,
+            record.kind,
+            record.source,
+            record.providerId,
+            record.modelId,
+            record.modelString,
+            record.inputTokens,
+            record.outputTokens,
+            record.cacheReadTokens,
+            record.cacheCreationTokens,
+            record.reasoningTokens,
+            record.quantity ?? null,
+            record.unit ?? null,
+          ],
+        );
+        return;
+      }
+    }
     const dir = usageDir(opts.baseDir);
     await fs.mkdir(dir, { recursive: true });
     await fs.appendFile(monthlyFile(dir, now), JSON.stringify(record) + '\n', 'utf-8');
@@ -176,6 +242,57 @@ interface ReadOptions {
  * 'llm'; any legacy cost fields are simply ignored.
  */
 export async function readUsageRecords(opts: ReadOptions = {}): Promise<UsageRecord[]> {
+  if (!opts.baseDir) {
+    const pool = await getUsagePool();
+    if (pool) {
+      const params: unknown[] = [];
+      let where = '';
+      if (opts.months?.length) {
+        params.push(opts.months.map((month) => `${month}%`));
+        where = `WHERE EXISTS (SELECT 1 FROM unnest($1::text[]) AS month_pattern
+                           WHERE to_char(to_timestamp(created_at / 1000.0), 'YYYY-MM') LIKE month_pattern)`;
+      }
+      const result = await pool.query<{
+        id: string;
+        created_at: string;
+        kind: UsageKind;
+        source: string;
+        provider_id: string;
+        model_id: string;
+        model_string: string;
+        input_tokens: string;
+        output_tokens: string;
+        cache_read_tokens: string;
+        cache_creation_tokens: string;
+        reasoning_tokens: string;
+        quantity: number | null;
+        unit: UsageUnit | null;
+      }>(
+        `SELECT id, created_at, kind, source, provider_id, model_id, model_string,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                reasoning_tokens,
+                quantity, unit
+           FROM kestack_usage_records ${where} ORDER BY created_at, id`,
+        params,
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        createdAt: Number(row.created_at),
+        kind: row.kind,
+        source: row.source,
+        providerId: row.provider_id,
+        modelId: row.model_id,
+        modelString: row.model_string,
+        inputTokens: Number(row.input_tokens),
+        outputTokens: Number(row.output_tokens),
+        cacheReadTokens: Number(row.cache_read_tokens),
+        cacheCreationTokens: Number(row.cache_creation_tokens),
+        reasoningTokens: Number(row.reasoning_tokens),
+        ...(row.quantity === null ? {} : { quantity: Number(row.quantity) }),
+        ...(row.unit === null ? {} : { unit: row.unit }),
+      }));
+    }
+  }
   const dir = usageDir(opts.baseDir);
   let files: string[];
   try {

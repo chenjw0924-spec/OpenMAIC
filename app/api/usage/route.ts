@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { getAuthenticatedUser } from '@/lib/server/auth/request';
 import {
   readUsageRecords,
   type UsageRecord,
@@ -70,6 +71,19 @@ function dayKey(createdAt: number): string {
  */
 export async function GET(req: NextRequest) {
   try {
+    const user = await getAuthenticatedUser(req);
+    const allowlist = (process.env.USAGE_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    if (
+      !user ||
+      !user.email ||
+      allowlist.length === 0 ||
+      !allowlist.includes(user.email.toLowerCase())
+    ) {
+      return apiError('INVALID_REQUEST', 403, 'Usage statistics are restricted to administrators');
+    }
     const monthsParam = req.nextUrl.searchParams.get('months');
     const months = monthsParam ? monthsParam.split(',').map((s) => s.trim()) : undefined;
 

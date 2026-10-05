@@ -177,6 +177,22 @@ function HomePage() {
   // instead of inspecting modelId directly.
   const providersConfig = useSettingsStore((s) => s.providersConfig);
   const hasUsableProvider = hasUsableLLMProvider(providersConfig);
+  const [platformModelAvailable, setPlatformModelAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void fetch('/api/server-providers', { cache: 'no-store' })
+      .then((response) => response.json() as Promise<{ generation?: { llmAvailable?: boolean } }>)
+      .then((data) => {
+        if (active) setPlatformModelAvailable(data.generation?.llmAvailable === true);
+      })
+      .catch(() => {
+        if (active) setPlatformModelAvailable(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const [recentOpen, setRecentOpen] = useState(true);
   const persistRecentOpen = (next: boolean) => {
     setRecentOpen(next);
@@ -569,10 +585,9 @@ function HomePage() {
   };
 
   const handleGenerate = async () => {
-    // No model/provider guard here: generation is gated by `canGenerate`
-    // (requires a usable provider), and under the #580 invariant a usable
-    // provider always has a concrete model. State A (no usable provider)
-    // surfaces through the toolbar's single Configure-Provider affordance.
+    // Generation may use either a browser-configured provider or the managed
+    // server model. The latter is the normal path for ordinary users and keeps
+    // provider credentials out of the browser.
     if (preparingGenerate) return;
     if (!form.requirement.trim()) {
       setError(t('upload.requirementRequired'));
@@ -696,7 +711,8 @@ function HomePage() {
     return date.toLocaleDateString();
   };
 
-  const canGenerate = !!form.requirement.trim() && hasUsableProvider;
+  const canGenerate =
+    !!form.requirement.trim() && (hasUsableProvider || platformModelAvailable === true);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -969,6 +985,11 @@ function HomePage() {
                 )}
               </button>
             </div>
+            {!hasUsableProvider && platformModelAvailable === false && (
+              <div className="mx-3 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                平台尚未配置可用的 AI 模型。请联系管理员完成平台配置；普通用户无需填写 API Key。
+              </div>
+            )}
           </div>
         </motion.div>
 

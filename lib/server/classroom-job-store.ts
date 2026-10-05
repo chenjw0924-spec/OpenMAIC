@@ -8,7 +8,9 @@ import type {
 } from '@/lib/server/classroom-generation';
 import {
   CLASSROOM_JOBS_DIR,
+  classroomStorageUsesDatabase,
   ensureClassroomJobsDir,
+  getClassroomStoragePool,
   writeJsonFileAtomic,
 } from '@/lib/server/classroom-storage';
 
@@ -30,6 +32,8 @@ export interface ClassroomGenerationJob {
     pdfTextLength: number;
     pdfImageCount: number;
   };
+  /** Safe-to-retry input. Per-user provider credentials are deliberately omitted. */
+  input?: GenerateClassroomInput;
   scenesGenerated: number;
   totalScenes?: number;
   result?: {
@@ -40,6 +44,7 @@ export interface ClassroomGenerationJob {
     warning?: string;
   };
   error?: string;
+  ownerId?: string;
 }
 
 function jobFilePath(jobId: string) {
@@ -54,6 +59,11 @@ function buildInputSummary(input: GenerateClassroomInput): ClassroomGenerationJo
     pdfTextLength: input.pdfContent?.text.length || 0,
     pdfImageCount: input.pdfContent?.images.length || 0,
   };
+}
+
+function buildResumableInput(input: GenerateClassroomInput): GenerateClassroomInput {
+  const { webSearchApiKey: _webSearchApiKey, ...safeInput } = input;
+  return safeInput;
 }
 
 /** Simple per-job mutex to serialize read-modify-write on the same job file. */
@@ -102,6 +112,7 @@ export function isValidClassroomJobId(jobId: string): boolean {
 export async function createClassroomGenerationJob(
   jobId: string,
   input: GenerateClassroomInput,
+  ownerId?: string,
 ): Promise<ClassroomGenerationJob> {
   const now = new Date().toISOString();
   const job: ClassroomGenerationJob = {
@@ -114,7 +125,19 @@ export async function createClassroomGenerationJob(
     updatedAt: now,
     inputSummary: buildInputSummary(input),
     scenesGenerated: 0,
+    input: buildResumableInput(input),
+    ...(ownerId ? { ownerId } : {}),
   };
+
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    await pool.query(
+      `INSERT INTO kestack_classroom_jobs (id, owner_id, data)
+       VALUES ($1, $2, $3::jsonb)`,
+      [jobId, ownerId ?? null, JSON.stringify(job)],
+    );
+    return job;
+  }
 
   await ensureClassroomJobsDir();
   await writeJsonFileAtomic(jobFilePath(jobId), job);
@@ -124,6 +147,15 @@ export async function createClassroomGenerationJob(
 export async function readClassroomGenerationJob(
   jobId: string,
 ): Promise<ClassroomGenerationJob | null> {
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    const result = await pool.query<{ data: ClassroomGenerationJob }>(
+      'SELECT data FROM kestack_classroom_jobs WHERE id = $1',
+      [jobId],
+    );
+    const job = result.rows[0]?.data;
+    return job ? markStaleIfNeeded(job) : null;
+  }
   try {
     const content = await fs.readFile(jobFilePath(jobId), 'utf-8');
     const job = JSON.parse(content) as ClassroomGenerationJob;
@@ -140,6 +172,35 @@ export async function updateClassroomGenerationJob(
   jobId: string,
   patch: Partial<ClassroomGenerationJob>,
 ): Promise<ClassroomGenerationJob> {
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{ data: ClassroomGenerationJob }>(
+        'SELECT data FROM kestack_classroom_jobs WHERE id = $1 FOR UPDATE',
+        [jobId],
+      );
+      const existing = result.rows[0]?.data;
+      if (!existing) throw new Error(`Classroom generation job not found: ${jobId}`);
+      const updated: ClassroomGenerationJob = {
+        ...existing,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      await client.query(
+        `UPDATE kestack_classroom_jobs SET data = $2::jsonb, updated_at = now() WHERE id = $1`,
+        [jobId, JSON.stringify(updated)],
+      );
+      await client.query('COMMIT');
+      return updated;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
   return withJobLock(jobId, async () => {
     const existing = await readClassroomGenerationJob(jobId);
     if (!existing) {
@@ -160,11 +221,61 @@ export async function updateClassroomGenerationJob(
 export async function markClassroomGenerationJobRunning(
   jobId: string,
 ): Promise<ClassroomGenerationJob> {
+  const claimed = await claimClassroomGenerationJob(jobId);
+  if (claimed) return claimed;
+
+  const existing = await readClassroomGenerationJob(jobId);
+  if (!existing) {
+    throw new Error(`Classroom generation job not found: ${jobId}`);
+  }
+  return existing;
+}
+
+/**
+ * Atomically claim a queued job for one process. This is the cross-instance
+ * fence that makes polling-based recovery safe on Vercel.
+ */
+export async function claimClassroomGenerationJob(
+  jobId: string,
+): Promise<ClassroomGenerationJob | null> {
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{ data: ClassroomGenerationJob }>(
+        'SELECT data FROM kestack_classroom_jobs WHERE id = $1 FOR UPDATE',
+        [jobId],
+      );
+      const existing = result.rows[0]?.data;
+      if (!existing || existing.status !== 'queued') {
+        await client.query('COMMIT');
+        return null;
+      }
+      const updated: ClassroomGenerationJob = {
+        ...existing,
+        status: 'running',
+        startedAt: existing.startedAt || new Date().toISOString(),
+        message: 'Classroom generation started',
+        updatedAt: new Date().toISOString(),
+      };
+      await client.query(
+        `UPDATE kestack_classroom_jobs SET data = $2::jsonb, updated_at = now() WHERE id = $1`,
+        [jobId, JSON.stringify(updated)],
+      );
+      await client.query('COMMIT');
+      return updated;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   return withJobLock(jobId, async () => {
     const existing = await readClassroomGenerationJob(jobId);
-    if (!existing) {
-      throw new Error(`Classroom generation job not found: ${jobId}`);
-    }
+    if (!existing || existing.status !== 'queued') return null;
 
     const updated: ClassroomGenerationJob = {
       ...existing,

@@ -1,8 +1,8 @@
 import { createLogger } from '@/lib/logger';
 import { generateClassroom, type GenerateClassroomInput } from '@/lib/server/classroom-generation';
 import {
+  claimClassroomGenerationJob,
   markClassroomGenerationJobFailed,
-  markClassroomGenerationJobRunning,
   markClassroomGenerationJobSucceeded,
   updateClassroomGenerationJobProgress,
 } from '@/lib/server/classroom-job-store';
@@ -14,6 +14,7 @@ export function runClassroomGenerationJob(
   jobId: string,
   input: GenerateClassroomInput,
   baseUrl: string,
+  ownerId?: string,
 ): Promise<void> {
   const existing = runningJobs.get(jobId);
   if (existing) {
@@ -22,10 +23,12 @@ export function runClassroomGenerationJob(
 
   const jobPromise = (async () => {
     try {
-      await markClassroomGenerationJobRunning(jobId);
+      const claimed = await claimClassroomGenerationJob(jobId);
+      if (!claimed) return;
 
       const result = await generateClassroom(input, {
         baseUrl,
+        ownerId,
         onProgress: async (progress) => {
           await updateClassroomGenerationJobProgress(jobId, progress);
         },

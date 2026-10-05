@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -14,7 +14,7 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
-import { Loader2, Trash2, AlertTriangle } from 'lucide-react';
+import { Loader2, Trash2, AlertTriangle, Download, ShieldCheck, ExternalLink } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import {
   clearLocalCache,
@@ -52,6 +52,53 @@ async function clearPersistedStore(persistApi: PersistApi, fallbackName: string)
 
 export function GeneralSettings() {
   const { t } = useI18n();
+  const [signedIn, setSignedIn] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+
+  useEffect(() => {
+    void fetch('/api/auth/session', { cache: 'no-store' })
+      .then((response) => response.json() as Promise<{ user?: unknown }>)
+      .then((data) => setSignedIn(Boolean(data.user)))
+      .catch(() => setSignedIn(false));
+  }, []);
+
+  const exportAccount = useCallback(async () => {
+    setAccountBusy(true);
+    try {
+      const response = await fetch('/api/account/export', { cache: 'no-store' });
+      if (!response.ok) throw new Error('export failed');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'kestack-account-export.json';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      log.error('Failed to export account data:', error);
+      toast.error('导出失败，请稍后重试');
+    } finally {
+      setAccountBusy(false);
+    }
+  }, []);
+
+  const deleteAccount = useCallback(async () => {
+    if (window.prompt('删除账号将永久清除服务器数据。请输入 DELETE 确认：') !== 'DELETE') return;
+    setAccountBusy(true);
+    try {
+      const response = await fetch('/api/account/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: 'DELETE' }),
+      });
+      if (!response.ok) throw new Error('delete failed');
+      window.location.assign('/login?deleted=1');
+    } catch (error) {
+      log.error('Failed to delete account:', error);
+      toast.error('账号删除失败，请稍后重试');
+      setAccountBusy(false);
+    }
+  }, []);
 
   // Clear cache state
   const [showClearDialog, setShowClearDialog] = useState(false);
@@ -101,6 +148,45 @@ export function GeneralSettings() {
 
   return (
     <div className="flex flex-col gap-8">
+      {signedIn && (
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 size-5 text-primary" />
+            <div>
+              <h3 className="text-sm font-semibold">隐私与数据控制</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                你可以下载账号数据，或永久删除账号及其服务器数据。浏览器缓存和偏好设置需要单独清除。
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={accountBusy}
+              onClick={() => void exportAccount()}
+            >
+              <Download className="mr-1.5 size-3.5" />
+              导出我的数据
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={accountBusy}
+              onClick={() => void deleteAccount()}
+            >
+              <Trash2 className="mr-1.5 size-3.5" />
+              删除账号和数据
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <a href="/privacy" target="_blank" rel="noreferrer">
+                隐私政策 <ExternalLink className="ml-1 size-3" />
+              </a>
+            </Button>
+          </div>
+        </section>
+      )}
+
       {/* Usage statistics dashboard */}
       <UsageDashboard />
 

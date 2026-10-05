@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { CLASSROOMS_DIR } from '@/lib/server/classroom-storage';
+import {
+  CLASSROOMS_DIR,
+  classroomStorageUsesDatabase,
+  writeClassroomMedia,
+} from '@/lib/server/classroom-storage';
 
 function extensionForMime(mime: string): string {
   const known: Record<string, string> = {
@@ -39,15 +43,27 @@ export async function persistClassroomMediaBytes(input: {
   bytes: Buffer | Uint8Array;
   mime: string;
   prefix?: string;
+  ownerId?: string;
   signal?: AbortSignal;
 }): Promise<string> {
   if (input.signal?.aborted) throw new Error('aborted');
   const hash = createHash('sha256').update(input.bytes).digest('hex');
   const filename = `${input.prefix ?? 'generated'}-${hash}.${extensionForMime(input.mime)}`;
-  const mediaDir = path.join(CLASSROOMS_DIR, input.stageId, 'media');
-  await fs.mkdir(mediaDir, { recursive: true });
   if (input.signal?.aborted) throw new Error('aborted');
-  await fs.writeFile(path.join(mediaDir, filename), input.bytes);
+  const mediaPath = `media/${filename}`;
+  if (classroomStorageUsesDatabase()) {
+    await writeClassroomMedia({
+      classroomId: input.stageId,
+      mediaPath,
+      bytes: input.bytes,
+      mime: input.mime,
+      ownerId: input.ownerId,
+    });
+  } else {
+    const mediaDir = path.join(CLASSROOMS_DIR, input.stageId, 'media');
+    await fs.mkdir(mediaDir, { recursive: true });
+    await fs.writeFile(path.join(mediaDir, filename), input.bytes);
+  }
   if (input.signal?.aborted) throw new Error('aborted');
   return `/api/classroom-media/${input.stageId}/media/${filename}`;
 }

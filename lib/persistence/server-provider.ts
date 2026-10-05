@@ -21,6 +21,8 @@ import { fenceOwnerWrite } from '@/lib/persistence/owner-merges';
 import { withSchemaBootstrapLock } from '@/lib/persistence/schema-bootstrap-lock';
 import { ensureStageMetaSchema } from '@/lib/persistence/stage-meta';
 import { APP_RUNTIME_PAYLOAD_VALIDATORS } from '@/lib/runtime/payload-validators';
+import { ensureClassroomSchema } from '@/lib/server/classroom-schema';
+import { ensureMaterialByteSchema } from '@/lib/server/material-byte-schema';
 
 export type PersistencePoolFactory = (connectionString: string) => Pool;
 
@@ -79,6 +81,8 @@ async function createServerPersistenceProvider(
       await ensureStageMetaSchema(locked);
       await ensureOwnerMaterialSchema(locked);
       await ensureAssetSchema(locked);
+      await ensureClassroomSchema(locked);
+      await ensureMaterialByteSchema(locked);
     });
     const withTransaction = nodePostgresTransaction(queryable);
     const byteStore = configuredLazyAssetByteStore(queryable);

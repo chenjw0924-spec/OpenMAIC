@@ -1,7 +1,12 @@
 import { promises as fs, createReadStream, type ReadStream } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
-import { CLASSROOMS_DIR, isValidClassroomId } from '@/lib/server/classroom-storage';
+import {
+  CLASSROOMS_DIR,
+  classroomStorageUsesDatabase,
+  isValidClassroomId,
+  readClassroomMedia,
+} from '@/lib/server/classroom-storage';
 import { parseRangeHeader } from '@/lib/server/http-range';
 import { createLogger } from '@/lib/logger';
 
@@ -58,6 +63,53 @@ export async function GET(
   const subDir = pathSegments[0];
   if (subDir !== 'media' && subDir !== 'audio') {
     return NextResponse.json({ error: 'Invalid path' }, { status: 404 });
+  }
+
+  if (classroomStorageUsesDatabase()) {
+    try {
+      const stored = await readClassroomMedia(classroomId, joined);
+      if (!stored) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+      const bytes = stored.bytes;
+      const range = parseRangeHeader(req.headers.get('range'), bytes.byteLength);
+      if (range.kind === 'unsatisfiable') {
+        return new NextResponse(null, {
+          status: 416,
+          headers: {
+            'Cache-Control': 'no-store',
+            'Content-Range': `bytes */${bytes.byteLength}`,
+          },
+        });
+      }
+      if (range.kind === 'range') {
+        const body = new Uint8Array(bytes.subarray(range.start, range.end + 1));
+        return new NextResponse(body, {
+          status: 206,
+          headers: {
+            ...CACHE_HEADERS,
+            'Content-Type': stored.mime,
+            'Content-Length': String(body.byteLength),
+            'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
+            'Accept-Ranges': 'bytes',
+          },
+        });
+      }
+      return new NextResponse(new Uint8Array(bytes), {
+        status: 200,
+        headers: {
+          ...CACHE_HEADERS,
+          'Content-Type': stored.mime,
+          'Content-Length': String(bytes.byteLength),
+          'Accept-Ranges': 'bytes',
+        },
+      });
+    } catch (error) {
+      log.error(
+        `Database classroom media serving failed [classroomId=${classroomId}, path=${joined}]:`,
+        error,
+      );
+      return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+    }
   }
 
   const filePath = path.join(CLASSROOMS_DIR, classroomId, ...pathSegments);

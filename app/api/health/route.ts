@@ -4,6 +4,7 @@ import {
   getServerImageProviders,
   getServerVideoProviders,
   getServerTTSProviders,
+  getServerProviders,
 } from '@/lib/server/provider-config';
 
 const version = process.env.npm_package_version || '0.1.0';
@@ -20,6 +21,7 @@ export async function GET() {
       imageGeneration: Object.values(getServerImageProviders()).some((info) => !info.disabled),
       videoGeneration: Object.values(getServerVideoProviders()).some((info) => !info.disabled),
       tts: Object.values(getServerTTSProviders()).some((info) => !info.disabled),
+      llm: Object.keys(getServerProviders()).length > 0,
     },
   });
 }

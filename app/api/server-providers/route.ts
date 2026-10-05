@@ -25,6 +25,7 @@ export async function GET() {
       webSearch: getServerWebSearchProviders(),
       generation: {
         parallelSceneConcurrency: getParallelSceneConcurrency(),
+        llmAvailable: Object.keys(getServerProviders()).length > 0,
       },
     });
   } catch (error) {

@@ -118,6 +118,7 @@ describe('POST /api/generate-classroom', () => {
         requirement: 'Generate from this PDF',
         pdfContent,
       }),
+      expect.any(String),
     );
     expect(mocks.after).toHaveBeenCalledTimes(1);
   });

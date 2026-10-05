@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import type { NextRequest } from 'next/server';
 import type { Scene, Stage } from '@/lib/types/stage';
 import { createLogger } from '@/lib/logger';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 
 const log = createLogger('ClassroomStorage');
 
@@ -16,6 +17,17 @@ export const CLASSROOMS_DIR = process.env.OPENMAIC_CLASSROOMS_DIR
   ? path.resolve(process.env.OPENMAIC_CLASSROOMS_DIR)
   : path.join(process.cwd(), 'data', 'classrooms');
 export const CLASSROOM_JOBS_DIR = path.join(process.cwd(), 'data', 'classroom-jobs');
+
+export function classroomStorageUsesDatabase(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim());
+}
+
+export async function getClassroomStoragePool() {
+  const connectionString = process.env.DATABASE_URL?.trim();
+  if (!connectionString) throw new Error('DATABASE_URL is required for database classroom storage');
+  const provider = await getServerPersistenceProvider(connectionString);
+  return provider.pool;
+}
 
 /** Id length shared by the create route and the generation pipeline. */
 export const CLASSROOM_ID_LENGTH = 10;
@@ -146,6 +158,7 @@ export interface PersistedClassroomData {
    * reservation is never served as an empty classroom.
    */
   reserved?: boolean;
+  ownerId?: string;
 }
 
 export function isValidClassroomId(id: string): boolean {
@@ -169,6 +182,29 @@ export function resolveClassroomFilePath(id: string): string {
 }
 
 export async function readClassroom(id: string): Promise<PersistedClassroomData | null> {
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    const result = await pool.query<{
+      id: string;
+      stage: Stage;
+      scenes: Scene[];
+      created_at: Date;
+      reserved: boolean;
+      owner_id: string | null;
+    }>(
+      'SELECT id, stage, scenes, created_at, reserved, owner_id FROM kestack_classrooms WHERE id = $1',
+      [id],
+    );
+    const row = result.rows[0];
+    if (!row || row.reserved) return null;
+    return {
+      id: row.id,
+      stage: row.stage,
+      scenes: row.scenes,
+      createdAt: row.created_at.toISOString(),
+      ...(row.owner_id ? { ownerId: row.owner_id } : {}),
+    };
+  }
   const filePath = resolveClassroomFilePath(id);
   try {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -193,7 +229,7 @@ export async function readClassroom(id: string): Promise<PersistedClassroomData 
  * directory. The caller owns the id and overwrites the placeholder with the
  * final document when generation completes.
  */
-export async function reserveClassroom(id: string, stage: Stage): Promise<void> {
+export async function reserveClassroom(id: string, stage: Stage, ownerId?: string): Promise<void> {
   const placeholder: PersistedClassroomData = {
     id,
     stage,
@@ -201,6 +237,17 @@ export async function reserveClassroom(id: string, stage: Stage): Promise<void> 
     createdAt: new Date().toISOString(),
     reserved: true,
   };
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    const result = await pool.query(
+      `INSERT INTO kestack_classrooms (id, owner_id, stage, scenes, reserved)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, true)
+       ON CONFLICT (id) DO NOTHING RETURNING id`,
+      [id, ownerId ?? null, JSON.stringify(stage), JSON.stringify([])],
+    );
+    if (result.rowCount !== 1) throw new ClassroomAlreadyExistsError(id);
+    return;
+  }
   await writeJsonFileExclusive(resolveClassroomFilePath(id), placeholder);
 }
 
@@ -213,6 +260,23 @@ export async function reserveClassroom(id: string, stage: Stage): Promise<void> 
  * failure that triggered the cleanup.
  */
 export async function releaseClassroomReservation(id: string): Promise<void> {
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    // Media can be generated before the classroom is finalized. Remove those
+    // bytes with the placeholder so a failed serverless job does not leave an
+    // orphaned object in the durable store.
+    await pool.query(
+      `DELETE FROM kestack_classroom_media
+        WHERE classroom_id = $1
+          AND EXISTS (
+            SELECT 1 FROM kestack_classrooms
+             WHERE id = $1 AND reserved = true
+          )`,
+      [id],
+    );
+    await pool.query('DELETE FROM kestack_classrooms WHERE id = $1 AND reserved = true', [id]);
+    return;
+  }
   const filePath = resolveClassroomFilePath(id);
   try {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -236,6 +300,7 @@ export interface PersistClassroomOptions {
    * the incumbent's content. Defaults to the legacy overwrite behaviour.
    */
   exclusive?: boolean;
+  ownerId?: string;
 }
 
 export async function persistClassroom(
@@ -252,7 +317,55 @@ export async function persistClassroom(
     stage: data.stage,
     scenes: data.scenes,
     createdAt: new Date().toISOString(),
+    ...(options.ownerId ? { ownerId: options.ownerId } : {}),
   };
+
+  if (classroomStorageUsesDatabase()) {
+    const pool = await getClassroomStoragePool();
+    if (options.exclusive) {
+      const inserted = await pool.query(
+        `INSERT INTO kestack_classrooms (id, owner_id, stage, scenes, created_at, reserved)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, false)
+         ON CONFLICT (id) DO NOTHING RETURNING id`,
+        [
+          data.id,
+          options.ownerId ?? null,
+          JSON.stringify(data.stage),
+          JSON.stringify(data.scenes),
+          classroomData.createdAt,
+        ],
+      );
+      if (inserted.rowCount !== 1) throw new ClassroomAlreadyExistsError(data.id);
+    } else {
+      const updated = await pool.query(
+        `UPDATE kestack_classrooms
+            SET owner_id = COALESCE($2, owner_id), stage = $3::jsonb,
+                scenes = $4::jsonb, created_at = $5, reserved = false
+          WHERE id = $1`,
+        [
+          data.id,
+          options.ownerId ?? null,
+          JSON.stringify(data.stage),
+          JSON.stringify(data.scenes),
+          classroomData.createdAt,
+        ],
+      );
+      if (updated.rowCount !== 1) {
+        await pool.query(
+          `INSERT INTO kestack_classrooms (id, owner_id, stage, scenes, created_at, reserved)
+           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, false)`,
+          [
+            data.id,
+            options.ownerId ?? null,
+            JSON.stringify(data.stage),
+            JSON.stringify(data.scenes),
+            classroomData.createdAt,
+          ],
+        );
+      }
+    }
+    return { ...classroomData, url: `${baseUrl}/classroom/${data.id}` };
+  }
 
   const filePath = resolveClassroomFilePath(data.id);
   await ensureClassroomsDir();
@@ -266,4 +379,58 @@ export async function persistClassroom(
     ...classroomData,
     url: `${baseUrl}/classroom/${data.id}`,
   };
+}
+
+export async function writeClassroomMedia(input: {
+  classroomId: string;
+  mediaPath: string;
+  bytes: Buffer | Uint8Array;
+  mime: string;
+  ownerId?: string;
+}): Promise<void> {
+  if (!classroomStorageUsesDatabase()) {
+    const mediaDir = path.join(CLASSROOMS_DIR, input.classroomId, path.dirname(input.mediaPath));
+    await ensureDir(mediaDir);
+    await fs.writeFile(path.join(CLASSROOMS_DIR, input.classroomId, input.mediaPath), input.bytes);
+    return;
+  }
+  const pool = await getClassroomStoragePool();
+  await pool.query(
+    `INSERT INTO kestack_classroom_media
+       (classroom_id, media_path, owner_id, mime, bytes)
+     VALUES ($1, $2, COALESCE($3, (SELECT owner_id FROM kestack_classrooms WHERE id = $1)), $4, $5)
+     ON CONFLICT (classroom_id, media_path) DO UPDATE
+       SET owner_id = COALESCE(EXCLUDED.owner_id, kestack_classroom_media.owner_id),
+           mime = EXCLUDED.mime, bytes = EXCLUDED.bytes`,
+    [
+      input.classroomId,
+      input.mediaPath,
+      input.ownerId ?? null,
+      input.mime,
+      Buffer.from(input.bytes),
+    ],
+  );
+}
+
+export async function readClassroomMedia(
+  classroomId: string,
+  mediaPath: string,
+): Promise<{ bytes: Buffer; mime: string } | null> {
+  if (!classroomStorageUsesDatabase()) return null;
+  const pool = await getClassroomStoragePool();
+  const result = await pool.query<{ bytes: Buffer; mime: string }>(
+    `SELECT bytes, mime FROM kestack_classroom_media
+      WHERE classroom_id = $1 AND media_path = $2`,
+    [classroomId, mediaPath],
+  );
+  const row = result.rows[0];
+  return row ? { bytes: Buffer.from(row.bytes), mime: row.mime } : null;
+}
+
+export async function deleteClassroomDataForOwner(ownerId: string): Promise<void> {
+  if (!classroomStorageUsesDatabase()) return;
+  const pool = await getClassroomStoragePool();
+  await pool.query('DELETE FROM kestack_classroom_media WHERE owner_id = $1', [ownerId]);
+  await pool.query('DELETE FROM kestack_classroom_jobs WHERE owner_id = $1', [ownerId]);
+  await pool.query('DELETE FROM kestack_classrooms WHERE owner_id = $1', [ownerId]);
 }
