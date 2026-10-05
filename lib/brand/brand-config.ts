@@ -25,10 +25,10 @@ export interface BrandConfig {
 
 /** The default brand: the product itself, with no vendor overrides. */
 export const DEFAULT_BRAND: BrandConfig = {
-  productName: 'OpenMAIC',
-  shortName: 'OpenMAIC',
+  productName: '课栈 KeStack',
+  shortName: '课栈',
   logoSrc: '/logo-horizontal.png',
-  logoHasWordmark: true,
+  logoHasWordmark: false,
   markSrc: '/openmaic-mark.png',
   themeColor: '#722ed1',
 };

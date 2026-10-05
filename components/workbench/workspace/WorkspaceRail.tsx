@@ -846,11 +846,17 @@ export function WorkspaceRail({
             never one control wearing both meanings. */}
         <HomeLink testId="pro-nav-home" onGoHome={onGoHome} className="-ml-1.5 px-1.5 py-1">
           <img
-            src={brand.logoSrc}
+            src={brand.markSrc}
             alt=""
             aria-hidden="true"
-            className="h-[21px] w-auto max-w-[110px] shrink-0"
+            className="h-[21px] w-auto shrink-0"
           />
+          <span
+            className="text-[15px] font-semibold tracking-tight"
+            style={{ color: brand.themeColor }}
+          >
+            {brand.shortName}
+          </span>
         </HomeLink>
         <ProBadge active onToggle={onExitPro} />
         {/* THE rail's header, and therefore where the rail folds — the same

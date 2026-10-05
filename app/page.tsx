@@ -840,9 +840,7 @@ function HomePage() {
       >
         {/* ── Logo ── */}
         <div className="relative" data-pro-morph="lockup">
-          <motion.img
-            src="/logo-horizontal.png"
-            alt="OpenMAIC"
+          <motion.div
             initial={heroEnter({ opacity: 0, scale: 0.9 })}
             animate={{ opacity: 1, scale: 1 }}
             transition={{
@@ -851,8 +849,13 @@ function HomePage() {
               stiffness: 200,
               damping: 20,
             }}
-            className="h-12 md:h-16 mb-2 -ml-2 md:-ml-3"
-          />
+            className="mb-2 flex items-center gap-2.5 md:gap-3"
+          >
+            <img src="/openmaic-mark.png" alt="课栈 KeStack" className="size-10 md:size-14" />
+            <span className="text-2xl md:text-4xl font-semibold tracking-tight text-[#722ed1]">
+              课栈 KeStack
+            </span>
+          </motion.div>
           {workbenchEntryEnabled ? (
             <div
               className="absolute left-full top-0 ml-1.5 mt-[10px] md:ml-2 md:mt-[14px]"
@@ -1352,7 +1355,7 @@ function HomePage() {
 
       {/* Footer — flows with content, at the very end */}
       <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
-        OpenMAIC Open Source Project
+        课栈 KeStack
       </div>
     </div>
   );
