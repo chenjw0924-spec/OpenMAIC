@@ -29,9 +29,20 @@ import { ProSwapWatcher } from '@/components/workbench/ProSwapWatcher';
 import '@fontsource-variable/inter';
 
 export const metadata: Metadata = {
-  title: 'OpenMAIC',
+  title: '课栈 KeStack',
   description:
-    'The open-source AI interactive classroom. Upload a PDF to instantly generate an immersive, multi-agent learning experience.',
+    '课栈 KeStack — AI 互动课堂。上传一份 PDF，即刻生成沉浸式、多智能体参与的学习体验。',
+  openGraph: {
+    title: '课栈 KeStack',
+    description: 'AI 互动课堂。上传一份 PDF，即刻生成沉浸式、多智能体参与的学习体验。',
+    siteName: '课栈 KeStack',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary',
+    title: '课栈 KeStack',
+    description: 'AI 互动课堂。上传一份 PDF，即刻生成沉浸式、多智能体参与的学习体验。',
+  },
 };
 
 export default function RootLayout({
