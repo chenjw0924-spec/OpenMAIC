@@ -123,8 +123,11 @@ export async function register(): Promise<void> {
     return shutdownPromise;
   };
 
-  process.once('SIGTERM', () => void shutdown());
-  process.once('SIGINT', () => void shutdown());
+  // Access the Node process through globalThis so the instrumentation module
+  // remains statically valid when Next also analyzes it for Edge bundles.
+  const nodeProcess = (globalThis as typeof globalThis & { process?: NodeJS.Process }).process;
+  nodeProcess?.['once']?.('SIGTERM', () => void shutdown());
+  nodeProcess?.['once']?.('SIGINT', () => void shutdown());
 }
 
 /**
