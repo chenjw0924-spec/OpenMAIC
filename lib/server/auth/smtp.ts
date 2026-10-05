@@ -79,6 +79,19 @@ function base64(value: string): string {
   return Buffer.from(value, 'utf8').toString('base64');
 }
 
+/**
+ * RFC 2045 §6.8 body encoding: base64 MIME content must be split into lines
+ * of at most 76 characters; a single unwrapped line trips strict receivers
+ * (QQ refuses the DATA phase with 500 'Line too long'). Headers keep using
+ * plain base64() - an RFC 2047 encoded-word must stay on one line.
+ */
+function base64Body(value: string): string {
+  const raw = base64(value);
+  const lines: string[] = [];
+  for (let i = 0; i < raw.length; i += 76) lines.push(raw.slice(i, i + 76));
+  return lines.join(CRLF);
+}
+
 /** RFC 2047 encoded-word for UTF-8 header values (subject, display names). */
 function encodeHeader(value: string): string {
   return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${base64(value)}?=`;
@@ -114,7 +127,7 @@ function buildMessage(config: SmtpConfig, mail: OutboundMail): string {
       'Content-Transfer-Encoding: base64' +
       CRLF +
       CRLF +
-      base64(mail.text) +
+      base64Body(mail.text) +
       CRLF +
       `--${boundary}` +
       CRLF +
@@ -123,13 +136,13 @@ function buildMessage(config: SmtpConfig, mail: OutboundMail): string {
       'Content-Transfer-Encoding: base64' +
       CRLF +
       CRLF +
-      base64(mail.html) +
+      base64Body(mail.html) +
       CRLF +
       `--${boundary}--`
     );
   }
   headers.push('Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: base64');
-  return headers.join(CRLF) + CRLF + CRLF + base64(mail.text);
+  return headers.join(CRLF) + CRLF + CRLF + base64Body(mail.text);
 }
 
 /**
