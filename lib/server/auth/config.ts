@@ -60,7 +60,7 @@ export function smtpConfig(): SmtpConfig | undefined {
     user,
     pass,
     from: process.env.SMTP_FROM?.trim() || user,
-    fromName: process.env.SMTP_FROM_NAME?.trim() || 'OpenMAIC',
+    fromName: process.env.SMTP_FROM_NAME?.trim() || '课栈',
   };
 }
 

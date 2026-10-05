@@ -11,7 +11,7 @@
  */
 
 export const DATABASE_URL_REQUIRED_MESSAGE =
-  'DATABASE_URL is not set. OpenMAIC stores courses in PostgreSQL and cannot start without a database. ' +
+  'DATABASE_URL is not set. KeStack stores courses in PostgreSQL and cannot start without a database. ' +
   'For local development, run `pnpm db:up` and set DATABASE_URL in .env.local (see .env.example). ' +
   'For a deployment, set DATABASE_URL to a PostgreSQL database, or use `docker compose up`, which starts one.';
 
