@@ -24,6 +24,7 @@ import {
   Upload,
   Sparkles,
   Atom,
+  BookOpen,
   X,
   Presentation,
   Loader2,
@@ -38,6 +39,7 @@ import { Textarea as UITextarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { SettingsDialog } from '@/components/settings';
 import { GenerationToolbar } from '@/components/generation/generation-toolbar';
+import { PrecompiledMaterialLibrary } from '@/components/generation/precompiled-material-library';
 import { AgentBar } from '@/components/agent/agent-bar';
 import { useTheme } from '@/lib/hooks/use-theme';
 import { nanoid } from 'nanoid';
@@ -97,6 +99,7 @@ import {
   readLastWorkspaceSessionId,
   workspaceResumeHref,
 } from '@/lib/workbench/workspace-session-memory';
+import type { PrecompiledMaterialSummary } from '@/lib/persistence/precompiled-materials';
 
 const log = createLogger('Home');
 
@@ -113,6 +116,8 @@ let workbenchRuntimeCache: boolean | null = null;
 
 interface FormState {
   courseMaterials: SelectedCourseMaterial[];
+  precompiledMaterialSlug: string | null;
+  precompiledMaterialTitle: string | null;
   requirement: string;
   interactiveMode: boolean;
   vocationalTestMode: boolean;
@@ -120,6 +125,8 @@ interface FormState {
 
 const initialFormState: FormState = {
   courseMaterials: [],
+  precompiledMaterialSlug: null,
+  precompiledMaterialTitle: null,
   requirement: '',
   interactiveMode: false,
   vocationalTestMode: false,
@@ -567,7 +574,36 @@ function HomePage() {
         );
       });
       if (missing.length === 0) return prev;
-      return { ...prev, courseMaterials: [...prev.courseMaterials, ...missing] };
+      return {
+        ...prev,
+        courseMaterials: [...prev.courseMaterials, ...missing],
+        precompiledMaterialSlug: null,
+        precompiledMaterialTitle: null,
+      };
+    });
+  };
+
+  const selectPrecompiledMaterial = (material: PrecompiledMaterialSummary) => {
+    if (preparingGenerate) return;
+    if (form.courseMaterials.length > 0) {
+      setError('请先移除已上传的课程材料，再选择预编译教材。');
+      return;
+    }
+    if (!form.requirement.trim()) {
+      updateForm(
+        'requirement',
+        `请基于《${material.title}》生成一套适合自学与辅助教学的课程，重点覆盖核心知识、易错点和典型题型。`,
+      );
+    }
+    setForm((prev) => ({
+      ...prev,
+      precompiledMaterialSlug: material.slug,
+      precompiledMaterialTitle: material.title,
+    }));
+    setError(null);
+    requestAnimationFrame(() => {
+      textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      textareaRef.current?.focus();
     });
   };
 
@@ -673,6 +709,7 @@ function HomePage() {
       const sessionState = {
         sessionId: nanoid(),
         requirements,
+        precompiledMaterialSlug: form.precompiledMaterialSlug ?? undefined,
         pdfText: '',
         pdfImages: [],
         imageStorageIds: [],
@@ -912,6 +949,28 @@ function HomePage() {
             </div>
 
             {/* Textarea */}
+            {form.precompiledMaterialSlug && form.precompiledMaterialTitle && (
+              <div className="mx-4 mb-1 flex items-center gap-2 rounded-lg border border-violet-200/70 bg-violet-50/70 px-3 py-2 text-xs text-violet-800 dark:border-violet-800/60 dark:bg-violet-950/25 dark:text-violet-200">
+                <BookOpen className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">
+                  已选教材：{form.precompiledMaterialTitle}
+                </span>
+                <button
+                  type="button"
+                  aria-label="移除预编译教材"
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      precompiledMaterialSlug: null,
+                      precompiledMaterialTitle: null,
+                    }))
+                  }
+                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-violet-200/70 dark:hover:bg-violet-800/60"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               placeholder={t('upload.requirementPlaceholder')}
@@ -1055,6 +1114,11 @@ function HomePage() {
           )}
         </AnimatePresence>
       </motion.div>
+
+      <PrecompiledMaterialLibrary
+        selectedSlug={form.precompiledMaterialSlug}
+        onSelect={selectPrecompiledMaterial}
+      />
 
       {/* ═══ Recent classrooms — collapsible ═══ */}
       {/* The library action bar is always present after hydration: it carries

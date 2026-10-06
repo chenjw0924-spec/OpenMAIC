@@ -573,6 +573,7 @@ function GenerationPreviewContent() {
             body: JSON.stringify(
               withThinkingConfig({
                 requirements: currentSession.requirements,
+                precompiledMaterialSlug: currentSession.precompiledMaterialSlug,
                 pdfText: currentSession.pdfText,
                 pdfImages: currentSession.pdfImages,
                 imageMapping,

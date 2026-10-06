@@ -12,6 +12,7 @@ import type {
 export interface GenerationSessionState {
   sessionId: string;
   requirements: UserRequirements;
+  precompiledMaterialSlug?: string;
   pdfText: string;
   documentSources?: SessionDocumentSource[];
   pdfImages?: PdfImage[];
