@@ -18,6 +18,7 @@ import { resolveAssetPendingTtlMs } from '@/lib/persistence/asset-pending-ttl';
 import { resolveAssetQuotaBytes } from '@/lib/persistence/asset-quota';
 import { ensureOwnerMaterialSchema } from '@/lib/persistence/owner-materials';
 import { fenceOwnerWrite } from '@/lib/persistence/owner-merges';
+import { ensurePrecompiledMaterialSchema } from '@/lib/persistence/precompiled-materials';
 import { withSchemaBootstrapLock } from '@/lib/persistence/schema-bootstrap-lock';
 import { ensureStageMetaSchema } from '@/lib/persistence/stage-meta';
 import { APP_RUNTIME_PAYLOAD_VALIDATORS } from '@/lib/runtime/payload-validators';
@@ -80,6 +81,7 @@ async function createServerPersistenceProvider(
       await ensureDocumentSchema(locked);
       await ensureStageMetaSchema(locked);
       await ensureOwnerMaterialSchema(locked);
+      await ensurePrecompiledMaterialSchema(locked);
       await ensureAssetSchema(locked);
       await ensureClassroomSchema(locked);
       await ensureMaterialByteSchema(locked);

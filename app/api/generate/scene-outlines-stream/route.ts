@@ -44,6 +44,8 @@ import { createLogger } from '@/lib/logger';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 import { sortDocumentImagesForVision } from '@/lib/document/bundle';
 import { resolveVisionImagesForPrompt } from '@/lib/persistence/resolve-vision-images';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import { getPrecompiledMaterial } from '@/lib/persistence/precompiled-materials';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 const log = createLogger('Outlines Stream');
 
@@ -309,15 +311,39 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Requirements are required');
     }
 
-    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents } = body as {
+    const {
+      requirements,
+      pdfText: requestPdfText,
+      precompiledMaterialSlug,
+      pdfImages,
+      imageMapping,
+      researchContext,
+      agents,
+    } = body as {
       requirements: UserRequirements;
       pdfText?: string;
+      precompiledMaterialSlug?: string;
       pdfImages?: PdfImage[];
       imageMapping?: ImageMapping;
       researchContext?: string;
       agents?: AgentInfo[];
     };
     requirementSnippet = requirements?.requirement?.substring(0, 60);
+
+    let pdfText = requestPdfText;
+    if (!pdfText && precompiledMaterialSlug) {
+      if (!/^[a-z0-9][a-z0-9-]{0,119}$/.test(precompiledMaterialSlug)) {
+        return apiError('INVALID_REQUEST', 400, 'Invalid precompiled material slug');
+      }
+      const connectionString = process.env.DATABASE_URL?.trim();
+      if (!connectionString) {
+        return apiError('INVALID_REQUEST', 400, 'Precompiled materials require DATABASE_URL');
+      }
+      const { pool } = await getServerPersistenceProvider(connectionString);
+      const material = await getPrecompiledMaterial(pool, precompiledMaterialSlug);
+      if (!material) return apiError('INVALID_REQUEST', 404, 'Precompiled material not found');
+      pdfText = material.text;
+    }
 
     // Build user profile string for language inference context
     const userProfileText =
