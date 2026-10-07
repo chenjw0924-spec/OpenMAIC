@@ -163,6 +163,15 @@ export async function POST(req: NextRequest) {
       images?: Array<{ id: string; src: string }>,
     ): Promise<string> => {
       const prompt = materialContext ? `${userPrompt}\n\n${materialContext}` : userPrompt;
+      const startedAt = Date.now();
+      log.info(
+        `LLM call started: model=${modelString}, systemChars=${systemPrompt.length}, promptChars=${prompt.length}, images=${images?.length ?? 0}`,
+      );
+      const logResult = (result: Awaited<ReturnType<typeof callLLM>>) => {
+        log.info(
+          `LLM call completed: model=${modelString}, elapsedMs=${Date.now() - startedAt}, outputChars=${result.text.length}, finishReason=${result.finishReason}, inputTokens=${result.usage.inputTokens ?? 'unknown'}, outputTokens=${result.usage.outputTokens ?? 'unknown'}`,
+        );
+      };
       if (images?.length && hasVision) {
         // Server-backed transport: `imageMapping` values are allocated asset
         // ids, so the image srcs reach here as ids. Resolve them to the same
@@ -187,6 +196,7 @@ export async function POST(req: NextRequest) {
           thinkingConfig,
           { serverManaged },
         );
+        logResult(result);
         return result.text;
       }
       const result = await callLLM(
@@ -202,6 +212,7 @@ export async function POST(req: NextRequest) {
         thinkingConfig,
         { serverManaged },
       );
+      logResult(result);
       return result.text;
     };
 

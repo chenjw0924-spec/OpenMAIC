@@ -6,6 +6,7 @@ import { STATUS_CODES } from 'node:http';
 
 import { LLM_FETCH_TIMEOUT_MS } from '@/lib/ai/providers';
 import { createLogger } from '@/lib/logger';
+import { withLlmRequestDiagnostics } from '@/lib/server/llm-request-diagnostics';
 import { providerFetch, type ProviderFetchPolicy } from '@/lib/server/provider-fetch';
 import { findUnsafeNetworkTargetError } from '@/lib/server/ssrf-guard';
 import { isRejectedRedirectError } from '@/lib/utils/rejected-redirect';
@@ -142,10 +143,8 @@ async function withoutErrorBody(response: Response): Promise<Response> {
 export const clientBaseUrlLlmFetch: typeof fetch = async (input, init) => {
   let response: Response;
   try {
-    response = await providerFetch(
-      input instanceof Request ? input.url : input,
-      init,
-      CLIENT_BASE_URL_LLM_POLICY,
+    response = await withLlmRequestDiagnostics(input, init, () =>
+      providerFetch(input instanceof Request ? input.url : input, init, CLIENT_BASE_URL_LLM_POLICY),
     );
   } catch (error) {
     if (!isAbortError(error)) log.warn('LLM provider request failed:', error);
