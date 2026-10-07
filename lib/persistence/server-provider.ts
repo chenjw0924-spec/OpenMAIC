@@ -61,6 +61,33 @@ const globalState = globalThis as typeof globalThis & {
 };
 const providerState = (globalState[PROVIDER_STATE_KEY] ??= {});
 
+const BOOTSTRAP_RETRY_DELAY_MS = 100;
+
+function isTransientBootstrapError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  const code = typeof candidate.code === 'string' ? candidate.code : '';
+  const message = typeof candidate.message === 'string' ? candidate.message : String(error);
+  return (
+    ['08001', '08003', '08004', '08006', '57P01', '57P05', '55P03'].includes(code) ||
+    /idle[- ]in[- ]transaction|connection (?:terminated|timeout)|lock timeout/i.test(message)
+  );
+}
+
+async function createServerPersistenceProviderWithRetry(
+  connectionString: string,
+  poolFactory: PersistencePoolFactory,
+): Promise<ServerPersistenceProvider> {
+  try {
+    return await createServerPersistenceProvider(connectionString, poolFactory);
+  } catch (error) {
+    if (!isTransientBootstrapError(error)) throw error;
+    log.warn('Transient database bootstrap failure; retrying with a fresh pool', error);
+    await new Promise((resolve) => setTimeout(resolve, BOOTSTRAP_RETRY_DELAY_MS));
+    return createServerPersistenceProvider(connectionString, poolFactory);
+  }
+}
+
 async function createServerPersistenceProvider(
   connectionString: string,
   poolFactory: PersistencePoolFactory,
@@ -180,13 +207,15 @@ export function getServerPersistenceProvider(
   }
 
   providerState.connectionString = key;
-  const initialization = createServerPersistenceProvider(key, poolFactory).catch((error) => {
-    if (providerState.providerPromise === initialization) {
-      providerState.providerPromise = undefined;
-      providerState.connectionString = undefined;
-    }
-    throw error;
-  });
+  const initialization = createServerPersistenceProviderWithRetry(key, poolFactory).catch(
+    (error) => {
+      if (providerState.providerPromise === initialization) {
+        providerState.providerPromise = undefined;
+        providerState.connectionString = undefined;
+      }
+      throw error;
+    },
+  );
   providerState.providerPromise = initialization;
   return initialization;
 }
