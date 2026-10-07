@@ -1069,6 +1069,7 @@
     "outlineRetrying": "Problema na geração do roteiro, tentando novamente...",
     "outlineEmptyResponse": "O modelo não retornou roteiros válidos. Verifique a configuração do modelo e tente novamente",
     "outlineGenerateFailed": "Falha ao gerar roteiro, tente novamente mais tarde",
+    "outlineGenerateTimeout": "A geração do roteiro excedeu o tempo limite. Tente novamente.",
     "sceneGenerateFailed": "Falha ao gerar cena, tente novamente mais tarde",
     "sceneGenerateAuthFailed": "A geração da cena falhou porque o provedor do modelo rejeitou as credenciais. Verifique a configuração do modelo.",
     "sceneGenerateRateLimited": "A geração da cena atingiu o limite de requisições. Aguarde um momento e tente novamente.",

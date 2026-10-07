@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { OutlinesEditor } from '@/components/generation/outlines-editor';
 import { cn } from '@/lib/utils';
+import { generationHttpErrorMessage } from '@/lib/utils/generation-http-error';
 import { useStageStore } from '@/lib/store/stage';
 import { useSettingsStore } from '@/lib/store/settings';
 import { useAgentRegistry } from '@/lib/orchestration/registry/store';
@@ -584,8 +585,15 @@ function GenerationPreviewContent() {
           })
             .then((res) => {
               if (!res.ok) {
-                return res.json().then((d) => {
-                  reject(new Error(d.error || t('generation.outlineGenerateFailed')));
+                return res.text().then((raw) => {
+                  reject(
+                    new Error(
+                      generationHttpErrorMessage(res.status, raw, {
+                        failed: t('generation.outlineGenerateFailed'),
+                        timeout: t('generation.outlineGenerateTimeout'),
+                      }),
+                    ),
+                  );
                 });
               }
 
@@ -973,6 +981,7 @@ function GenerationPreviewContent() {
         {
           outline: firstOutline,
           allOutlines: outlines,
+          precompiledMaterialSlug: currentSession.precompiledMaterialSlug,
           pdfImages: currentSession.pdfImages,
           imageMapping,
           stageInfo,
@@ -1043,6 +1052,7 @@ function GenerationPreviewContent() {
       sessionStorage.setItem(
         'generationParams',
         JSON.stringify({
+          precompiledMaterialSlug: currentSession.precompiledMaterialSlug,
           pdfImages: currentSession.pdfImages,
           agents,
           userProfile,

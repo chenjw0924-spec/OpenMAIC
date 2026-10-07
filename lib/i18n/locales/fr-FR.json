@@ -1069,6 +1069,7 @@
     "outlineRetrying": "Problème lors de la génération du plan, nouvelle tentative…",
     "outlineEmptyResponse": "Le modèle n’a renvoyé aucun plan valide. Vérifiez sa configuration et réessayez",
     "outlineGenerateFailed": "Échec de la génération du plan, veuillez réessayer plus tard",
+    "outlineGenerateTimeout": "La génération du plan a expiré. Réessayez.",
     "sceneGenerateFailed": "Échec de la génération de la scène, veuillez réessayer plus tard",
     "sceneGenerateAuthFailed": "La génération de la scène a échoué : le fournisseur de modèle a rejeté les identifiants. Vérifiez la configuration de votre modèle.",
     "sceneGenerateRateLimited": "La génération de scène est limitée en débit. Patientez un instant et réessayez.",

@@ -149,6 +149,7 @@ export async function fetchSceneContent(
     outline: SceneOutline;
     allOutlines: SceneOutline[];
     stageId: string;
+    precompiledMaterialSlug?: string;
     pdfImages?: PdfImage[];
     imageMapping?: ImageMapping;
     stageInfo: {
@@ -719,6 +720,7 @@ export interface UseSceneGeneratorOptions {
 }
 
 export interface GenerationParams {
+  precompiledMaterialSlug?: string;
   pdfImages?: PdfImage[];
   imageMapping?: ImageMapping;
   stageInfo: {
@@ -838,6 +840,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
               outline,
               allOutlines: outlines,
               stageId: stage.id,
+              precompiledMaterialSlug: params.precompiledMaterialSlug,
               pdfImages: params.pdfImages,
               imageMapping: params.imageMapping,
               stageInfo: params.stageInfo,
@@ -1092,6 +1095,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             outline,
             allOutlines: state.outlines,
             stageId: state.stage.id,
+            precompiledMaterialSlug: params.precompiledMaterialSlug,
             pdfImages: params.pdfImages,
             imageMapping: params.imageMapping,
             stageInfo: params.stageInfo,

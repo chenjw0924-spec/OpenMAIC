@@ -133,6 +133,7 @@ describe('scene generation retry wrappers', () => {
         outline,
         allOutlines: [outline],
         stageId: 'stage-1',
+        precompiledMaterialSlug: 'math-book',
         stageInfo: { name: 'Retry Course' },
       },
       undefined,
@@ -141,6 +142,7 @@ describe('scene generation retry wrappers', () => {
 
     expect(result).toMatchObject({ success: true, content: { elements: [] } });
     expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).precompiledMaterialSlug).toBe('math-book');
   });
 
   it('does not retry permanent scene action HTTP failures', async () => {

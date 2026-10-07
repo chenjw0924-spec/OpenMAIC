@@ -1069,6 +1069,7 @@
     "outlineRetrying": "Outline generation issue, retrying...",
     "outlineEmptyResponse": "Model returned no valid outlines. Please check model configuration and try again",
     "outlineGenerateFailed": "Outline generation failed, please try again later",
+    "outlineGenerateTimeout": "Outline generation timed out. Please try again.",
     "sceneGenerateFailed": "Scene generation failed, please try again later",
     "sceneGenerateAuthFailed": "Scene generation failed because the model provider rejected the credentials. Please check your model configuration.",
     "sceneGenerateRateLimited": "Scene generation is rate limited. Please wait a moment and try again.",

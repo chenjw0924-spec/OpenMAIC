@@ -24,6 +24,9 @@ import { ensureStageMetaSchema } from '@/lib/persistence/stage-meta';
 import { APP_RUNTIME_PAYLOAD_VALIDATORS } from '@/lib/runtime/payload-validators';
 import { ensureClassroomSchema } from '@/lib/server/classroom-schema';
 import { ensureMaterialByteSchema } from '@/lib/server/material-byte-schema';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('Persistence Bootstrap');
 
 export type PersistencePoolFactory = (connectionString: string) => Pool;
 
@@ -72,6 +75,8 @@ async function createServerPersistenceProvider(
   const pendingTtlMs = resolveAssetPendingTtlMs();
   const pool = poolFactory(connectionString);
   const queryable = pool as unknown as ConnectableQueryable;
+  const startedAt = Date.now();
+  log.info('Starting database schema bootstrap');
   try {
     // One instance at a time: see withSchemaBootstrapLock. The ownership
     // backfill in ensureStageMetaSchema runs under the same lock, before any
@@ -86,6 +91,7 @@ async function createServerPersistenceProvider(
       await ensureClassroomSchema(locked);
       await ensureMaterialByteSchema(locked);
     });
+    log.info(`Database schema bootstrap completed in ${Date.now() - startedAt}ms`);
     const withTransaction = nodePostgresTransaction(queryable);
     const byteStore = configuredLazyAssetByteStore(queryable);
     const documentStore = new PgDocumentStore(queryable, {
@@ -144,6 +150,7 @@ async function createServerPersistenceProvider(
       assetStoreIn: (pinned) => assetRegistry(pinned, (body) => body(pinned)),
     };
   } catch (error) {
+    log.error(`Database initialization failed after ${Date.now() - startedAt}ms`, error);
     await pool.end().catch(() => {});
     throw error;
   }
@@ -164,7 +171,8 @@ async function createServerPersistenceProvider(
  */
 export function getServerPersistenceProvider(
   connectionString: string,
-  poolFactory: PersistencePoolFactory = (value) => new Pool({ connectionString: value }),
+  poolFactory: PersistencePoolFactory = (value) =>
+    new Pool({ connectionString: value, connectionTimeoutMillis: 10_000 }),
 ): Promise<ServerPersistenceProvider> {
   const key = connectionString.trim();
   if (providerState.providerPromise && providerState.connectionString === key) {

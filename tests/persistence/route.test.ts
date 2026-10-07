@@ -11,6 +11,10 @@ vi.mock('@/lib/persistence/schema-bootstrap-lock', () => ({
     body(pool as never),
 }));
 
+vi.mock('@/lib/persistence/precompiled-materials', () => ({
+  ensurePrecompiledMaterialSchema: vi.fn().mockResolvedValue(undefined),
+}));
+
 interface AssetStoreLike {
   put(principal: { key: string }, data: Blob, meta?: unknown): Promise<string>;
 }

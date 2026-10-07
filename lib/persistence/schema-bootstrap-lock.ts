@@ -1,5 +1,6 @@
 import type { Queryable } from '@openmaic/storage/document/pg';
 import type { ConnectableQueryable } from '@openmaic/storage/server/reference';
+import type { PoolClient } from 'pg';
 
 /**
  * PostgreSQL advisory-lock key serializing schema bootstrap across processes.
@@ -7,7 +8,8 @@ import type { ConnectableQueryable } from '@openmaic/storage/server/reference';
  * application and distinct from the keys the storage package's test suites
  * take.
  */
-export const SCHEMA_BOOTSTRAP_LOCK_KEY = 71_310_523;
+// v2 does not wait on session locks leaked by older deployments through a pooler.
+export const SCHEMA_BOOTSTRAP_LOCK_KEY = 71_310_524;
 
 /**
  * Run a schema bootstrap with every other instance's bootstrap held off.
@@ -20,10 +22,10 @@ export const SCHEMA_BOOTSTRAP_LOCK_KEY = 71_310_523;
  * statements are idempotent one at a time, so running the bootstraps one
  * after another is all it takes.
  *
- * The lock is session-level and taken on one dedicated connection, which runs
- * every statement of `body` and is released in `finally`: the lock cannot be
- * held by a connection that went back to the pool, and a connection that dies
- * mid-bootstrap releases it with the session. It lives here, at the
+ * The lock is transaction-level: BEGIN pins the backend even behind a Neon
+ * transaction pooler. A session-level lock acquired in autocommit mode can
+ * otherwise be unlocked on a different backend and leak indefinitely. It lives
+ * here, at the
  * application's bootstrap, rather than in each package `ensure*Schema`
  * function, because what must be serialized is the whole sequence -- package
  * tables and this application's own (`stage_meta`, owner materials) alike --
@@ -33,15 +35,32 @@ export async function withSchemaBootstrapLock<T>(
   pool: ConnectableQueryable,
   body: (queryable: Queryable) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
+  // Application callers use node-postgres pools, whose release accepts an error
+  // to discard a broken connection; the storage interface omits that argument.
+  const client = (await pool.connect()) as Queryable & Pick<PoolClient, 'release'>;
+  let releaseError: Error | undefined;
   try {
-    await client.query('SELECT pg_advisory_lock($1::bigint)', [SCHEMA_BOOTSTRAP_LOCK_KEY]);
+    await client.query('BEGIN');
     try {
-      return await body(client);
-    } finally {
-      await client.query('SELECT pg_advisory_unlock($1::bigint)', [SCHEMA_BOOTSTRAP_LOCK_KEY]);
+      await client.query("SET LOCAL lock_timeout = '15s'");
+      await client.query("SET LOCAL statement_timeout = '30s'");
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [SCHEMA_BOOTSTRAP_LOCK_KEY]);
+      const result = await body(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        releaseError =
+          rollbackError instanceof Error ? rollbackError : new Error('Rollback failed');
+      }
+      throw error;
     }
+  } catch (error) {
+    releaseError ??= error instanceof Error ? error : new Error('Schema bootstrap failed');
+    throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }

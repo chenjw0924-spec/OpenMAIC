@@ -33,6 +33,11 @@ import {
   type VisionPromptImage,
 } from '@/lib/persistence/resolve-vision-images';
 import { generatePBLV2Project } from '@/lib/pbl/v2/agents/planner';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import {
+  buildPrecompiledSceneContext,
+  getPrecompiledMaterial,
+} from '@/lib/persistence/precompiled-materials';
 
 const log = createLogger('Scene Content API');
 
@@ -71,6 +76,7 @@ export async function POST(req: NextRequest) {
       agents,
       languageDirective,
       requirements,
+      precompiledMaterialSlug,
     } = body as {
       outline: SceneOutline;
       allOutlines: SceneOutline[];
@@ -85,6 +91,7 @@ export async function POST(req: NextRequest) {
       agents?: AgentInfo[];
       languageDirective?: string;
       requirements?: UserRequirements;
+      precompiledMaterialSlug?: string;
     };
 
     // Validate required fields
@@ -121,6 +128,26 @@ export async function POST(req: NextRequest) {
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
 
+    let materialContext = '';
+    if (precompiledMaterialSlug !== undefined) {
+      if (
+        typeof precompiledMaterialSlug !== 'string' ||
+        !/^[a-z0-9][a-z0-9-]{0,119}$/.test(precompiledMaterialSlug)
+      ) {
+        return apiError('INVALID_REQUEST', 400, 'Invalid precompiled material slug');
+      }
+      const connectionString = process.env.DATABASE_URL?.trim();
+      if (!connectionString)
+        return apiError('INVALID_REQUEST', 400, 'Precompiled materials require DATABASE_URL');
+      const { pool } = await getServerPersistenceProvider(connectionString);
+      const material = await getPrecompiledMaterial(pool, precompiledMaterialSlug);
+      if (!material) return apiError('INVALID_REQUEST', 404, 'Precompiled material not found');
+      materialContext = buildPrecompiledSceneContext(material, outline);
+      log.info(
+        `Using precompiled scene context: slug=${precompiledMaterialSlug}, chars=${materialContext.length}`,
+      );
+    }
+
     // Vision-aware AI call function. On a server-backed transport the
     // `imageMapping` values are allocated asset ids; the N3 pre-resolution
     // below has already resolved the vision slice's ids to bytes and stripped
@@ -135,6 +162,7 @@ export async function POST(req: NextRequest) {
       userPrompt: string,
       images?: Array<{ id: string; src: string }>,
     ): Promise<string> => {
+      const prompt = materialContext ? `${userPrompt}\n\n${materialContext}` : userPrompt;
       if (images?.length && hasVision) {
         // Server-backed transport: `imageMapping` values are allocated asset
         // ids, so the image srcs reach here as ids. Resolve them to the same
@@ -148,7 +176,7 @@ export async function POST(req: NextRequest) {
             messages: [
               {
                 role: 'user' as const,
-                content: buildVisionUserContent(userPrompt, resolvedImages),
+                content: buildVisionUserContent(prompt, resolvedImages),
               },
             ],
             maxOutputTokens: modelInfo?.outputWindow,
@@ -165,7 +193,7 @@ export async function POST(req: NextRequest) {
         {
           model: languageModel,
           system: systemPrompt,
-          prompt: userPrompt,
+          prompt,
           maxOutputTokens: modelInfo?.outputWindow,
           maxRetries: 0,
         },

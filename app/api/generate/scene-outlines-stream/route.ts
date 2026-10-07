@@ -45,7 +45,10 @@ import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 import { sortDocumentImagesForVision } from '@/lib/document/bundle';
 import { resolveVisionImagesForPrompt } from '@/lib/persistence/resolve-vision-images';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
-import { getPrecompiledMaterial } from '@/lib/persistence/precompiled-materials';
+import {
+  buildPrecompiledOutlineContext,
+  getPrecompiledMaterial,
+} from '@/lib/persistence/precompiled-materials';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 const log = createLogger('Outlines Stream');
 
@@ -342,7 +345,10 @@ export async function POST(req: NextRequest) {
       const { pool } = await getServerPersistenceProvider(connectionString);
       const material = await getPrecompiledMaterial(pool, precompiledMaterialSlug);
       if (!material) return apiError('INVALID_REQUEST', 404, 'Precompiled material not found');
-      pdfText = material.text;
+      pdfText = buildPrecompiledOutlineContext(material);
+      log.info(
+        `Using bounded precompiled outline context: slug=${precompiledMaterialSlug}, chars=${pdfText.length}, chapters=${material.chapters.length}, chunks=${material.chunks.length}`,
+      );
     }
 
     // Build user profile string for language inference context

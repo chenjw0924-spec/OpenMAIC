@@ -360,6 +360,7 @@ export function ClassroomSurface({
       >;
       const finishResume = (imageMapping: Record<string, string>) =>
         generateRemaining({
+          precompiledMaterialSlug: params.precompiledMaterialSlug,
           pdfImages: params.pdfImages,
           imageMapping,
           stageInfo: {
