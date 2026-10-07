@@ -6,7 +6,12 @@ import {
 } from '@/lib/persistence/schema-bootstrap-lock';
 
 function fixture() {
-  const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+  const client = {
+    query: vi.fn().mockResolvedValue({ rows: [] }),
+    release: vi.fn(),
+    on: vi.fn(),
+    removeListener: vi.fn(),
+  };
   const pool = { connect: vi.fn().mockResolvedValue(client) };
   return { client, pool: pool as unknown as ConnectableQueryable };
 }
@@ -22,6 +27,7 @@ describe('pooler-safe schema bootstrap', () => {
     ).resolves.toBe('ready');
     expect(client.query.mock.calls).toEqual([
       ['BEGIN'],
+      ["SET LOCAL idle_in_transaction_session_timeout = '10s'"],
       ["SET LOCAL lock_timeout = '15s'"],
       ["SET LOCAL statement_timeout = '30s'"],
       ['SELECT pg_advisory_xact_lock($1::bigint)', [SCHEMA_BOOTSTRAP_LOCK_KEY]],
@@ -29,6 +35,18 @@ describe('pooler-safe schema bootstrap', () => {
       ['COMMIT'],
     ]);
     expect(client.release).toHaveBeenCalledOnce();
+    expect(client.removeListener).toHaveBeenCalledWith('error', client.on.mock.calls[0][1]);
+  });
+
+  it('discards a connection PostgreSQL terminates while the instance is idle', async () => {
+    const { client, pool } = fixture();
+    const error = new Error('terminating connection due to idle-in-transaction timeout');
+    await withSchemaBootstrapLock(pool, async () => {
+      const onError = client.on.mock.calls[0][1] as (error: Error) => void;
+      onError(error);
+    });
+    expect(client.release).toHaveBeenCalledWith(error);
+    expect(client.removeListener).toHaveBeenCalledWith('error', client.on.mock.calls[0][1]);
   });
 
   it('rolls back and releases the connection when initialization fails', async () => {

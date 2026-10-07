@@ -37,11 +37,20 @@ export async function withSchemaBootstrapLock<T>(
 ): Promise<T> {
   // Application callers use node-postgres pools, whose release accepts an error
   // to discard a broken connection; the storage interface omits that argument.
-  const client = (await pool.connect()) as Queryable & Pick<PoolClient, 'release'>;
+  const client = (await pool.connect()) as Queryable &
+    Pick<PoolClient, 'release'> &
+    Partial<Pick<PoolClient, 'on' | 'removeListener'>>;
   let releaseError: Error | undefined;
+  const onClientError = (error: Error) => {
+    releaseError ??= error;
+  };
+  client.on?.('error', onClientError);
   try {
     await client.query('BEGIN');
     try {
+      // A suspended serverless instance must not hold the lock indefinitely
+      // between queries. PostgreSQL enforces this even while JS is frozen.
+      await client.query("SET LOCAL idle_in_transaction_session_timeout = '10s'");
       await client.query("SET LOCAL lock_timeout = '15s'");
       await client.query("SET LOCAL statement_timeout = '30s'");
       await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [SCHEMA_BOOTSTRAP_LOCK_KEY]);
@@ -61,6 +70,7 @@ export async function withSchemaBootstrapLock<T>(
     releaseError ??= error instanceof Error ? error : new Error('Schema bootstrap failed');
     throw error;
   } finally {
+    client.removeListener?.('error', onClientError);
     client.release(releaseError);
   }
 }
