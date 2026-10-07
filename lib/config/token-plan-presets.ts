@@ -230,6 +230,7 @@ export const TOKEN_PLAN_PRESETS: TokenPlanPreset[] = [
         baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
         apiFormat: 'openai',
         defaultModels: [
+          'doubao-seed-2.1-pro',
           'doubao-seed-2.1-turbo',
           'ark-code-latest',
           'doubao-seed-2.0-pro',
@@ -246,7 +247,7 @@ export const TOKEN_PLAN_PRESETS: TokenPlanPreset[] = [
           'kimi-k2.7-code',
           'kimi-k2.6',
         ],
-        defaultModelId: 'doubao-seed-2.1-turbo',
+        defaultModelId: 'doubao-seed-2.1-pro',
       },
       // Image: Agent Plan documentation and user-facing guides consistently
       // expose Seedream 5.0 Lite via the dotted plan alias, not the pay-as-you-go
