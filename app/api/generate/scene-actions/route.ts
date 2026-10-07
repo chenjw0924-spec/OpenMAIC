@@ -12,6 +12,7 @@ import {
   generateSceneActions,
   buildCompleteScene,
   buildVisionUserContent,
+  isRetryableGenerationError,
   type SceneGenerationContext,
   type AgentInfo,
 } from '@openmaic/generation';
@@ -33,6 +34,18 @@ import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 const log = createLogger('Scene Actions API');
 
 export const maxDuration = 60;
+
+/**
+ * Action narration is an enhancement over the deterministic actions already
+ * available in the generation package. A provider timeout should not discard
+ * otherwise valid scene content, but auth and rate-limit errors must remain
+ * visible so the user can fix the model configuration or wait before retrying.
+ */
+function isActionModelTimeout(error: unknown): boolean {
+  if (!isRetryableGenerationError(error)) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|timed out|fetch failed|socket hang up|ECONNRESET|ETIMEDOUT/i.test(message);
+}
 
 export async function POST(req: NextRequest) {
   let outlineTitle: string | undefined;
@@ -96,6 +109,20 @@ export async function POST(req: NextRequest) {
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
 
+    const callActionModel = async (
+      run: () => Promise<{ text: string }>,
+    ): Promise<{ text: string }> => {
+      try {
+        return await run();
+      } catch (error) {
+        if (!isActionModelTimeout(error)) throw error;
+        log.warn(
+          `Action model timed out for "${outline.title}"; using deterministic actions instead.`,
+        );
+        return { text: '' };
+      }
+    };
+
     // AI call function (actions typically don't use vision, but kept for consistency)
     const aiCall = async (
       systemPrompt: string,
@@ -103,16 +130,34 @@ export async function POST(req: NextRequest) {
       images?: Array<{ id: string; src: string }>,
     ): Promise<string> => {
       if (images?.length && hasVision) {
-        const result = await callLLM(
+        const result = await callActionModel(() =>
+          callLLM(
+            {
+              model: languageModel,
+              system: systemPrompt,
+              messages: [
+                {
+                  role: 'user' as const,
+                  content: buildVisionUserContent(userPrompt, images),
+                },
+              ],
+              maxOutputTokens: modelInfo?.outputWindow,
+              maxRetries: 0,
+            },
+            'scene-actions',
+            undefined,
+            thinkingConfig,
+            { serverManaged },
+          ),
+        );
+        return result.text;
+      }
+      const result = await callActionModel(() =>
+        callLLM(
           {
             model: languageModel,
             system: systemPrompt,
-            messages: [
-              {
-                role: 'user' as const,
-                content: buildVisionUserContent(userPrompt, images),
-              },
-            ],
+            prompt: userPrompt,
             maxOutputTokens: modelInfo?.outputWindow,
             maxRetries: 0,
           },
@@ -120,21 +165,7 @@ export async function POST(req: NextRequest) {
           undefined,
           thinkingConfig,
           { serverManaged },
-        );
-        return result.text;
-      }
-      const result = await callLLM(
-        {
-          model: languageModel,
-          system: systemPrompt,
-          prompt: userPrompt,
-          maxOutputTokens: modelInfo?.outputWindow,
-          maxRetries: 0,
-        },
-        'scene-actions',
-        undefined,
-        thinkingConfig,
-        { serverManaged },
+        ),
       );
       return result.text;
     };

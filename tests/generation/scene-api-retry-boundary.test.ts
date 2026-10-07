@@ -350,6 +350,37 @@ describe('scene API retry boundary', () => {
       error: 'Upstream model provider is temporarily unavailable. Please try again.',
     });
   });
+
+  it('uses deterministic actions when the scene-actions model times out', async () => {
+    vi.resetModules();
+    const timeout = new Error('Cannot connect to API: request timed out');
+    mocks.generateSceneActions.mockImplementation(async (_outline, _content, aiCall) => {
+      const response = await aiCall('system', 'user');
+      expect(response).toBe('');
+      return [];
+    });
+    mocks.callLLM.mockRejectedValueOnce(timeout);
+    mocks.buildCompleteScene.mockReturnValue({
+      id: 'scene-1',
+      type: 'slide',
+      title: outline.title,
+      order: outline.order,
+      content: { elements: [], remark: 'ok' },
+      actions: [],
+    });
+
+    const { POST } = await import('@/app/api/generate/scene-actions/route');
+    const response = await POST(
+      mockRequest({
+        content: { elements: [], remark: 'ok' },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.scene).toBeTruthy();
+  });
 });
 
 function mockRequest(extraBody: Record<string, unknown> = {}) {
