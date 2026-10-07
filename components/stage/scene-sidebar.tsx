@@ -45,6 +45,7 @@ export function SceneSidebar({
   const router = useRouter();
   const { scenes, currentSceneId, setCurrentSceneId, generatingOutlines, generationStatus } =
     useStageStore();
+  const outlines = useStageStore.use.outlines();
   const failedOutlines = useStageStore.use.failedOutlines();
   const viewportSize = useCanvasStore.use.viewportSize();
   const viewportRatio = useCanvasStore.use.viewportRatio();
@@ -152,6 +153,11 @@ export function SceneSidebar({
             const Icon = getSceneTypeIcon(scene.type);
             const isSlide = scene.type === 'slide';
             const isInteractive = scene.type === 'interactive';
+            const outline =
+              outlines.find((candidate) => candidate.id === scene.outlineId) ??
+              outlines.find((candidate) => candidate.order === scene.order);
+            const canRetry = Boolean(onRetryOutline && outline);
+            const isRetrying = Boolean(outline && retryingOutlineId === outline.id);
             const slideContent = isSlide ? (scene.content as SlideContent) : null;
             const interactiveContent = isInteractive ? (scene.content as InteractiveContent) : null;
 
@@ -174,7 +180,7 @@ export function SceneSidebar({
                 )}
               >
                 {/* Scene Header */}
-                <div className="flex justify-between items-center px-2 pt-0.5">
+                <div className="flex justify-between items-center gap-1 px-2 pt-0.5">
                   <div className="flex items-center gap-2 max-w-full">
                     <span
                       className={cn(
@@ -198,6 +204,25 @@ export function SceneSidebar({
                       {scene.title}
                     </span>
                   </div>
+                  {canRetry && outline && (
+                    <button
+                      type="button"
+                      aria-label={
+                        isRetrying ? t('generation.retryingScene') : t('generation.retryScene')
+                      }
+                      title={
+                        isRetrying ? t('generation.retryingScene') : t('generation.retryScene')
+                      }
+                      disabled={isRetrying}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleRetryOutline(outline.id);
+                      }}
+                      className="h-6 w-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 hover:bg-purple-100 hover:text-purple-600 dark:text-gray-500 dark:hover:bg-purple-900/40 dark:hover:text-purple-300 disabled:opacity-50 transition-colors"
+                    >
+                      <RefreshCw className={cn('h-3.5 w-3.5', isRetrying && 'animate-spin')} />
+                    </button>
+                  )}
                 </div>
 
                 {/* Thumbnail */}

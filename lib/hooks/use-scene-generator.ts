@@ -4,6 +4,7 @@ import { useCallback, useRef } from 'react';
 import { useStageStore } from '@/lib/store/stage';
 import { isSceneEditLocked } from '@/lib/edit/regen-lock';
 import { getCurrentModelConfig, getStageRoutesHeaderValue } from '@/lib/utils/model-config';
+import { loadImageMapping } from '@/lib/utils/image-storage';
 import { useSettingsStore } from '@/lib/store/settings';
 import { db } from '@/lib/device-storage/database';
 import type {
@@ -736,12 +737,67 @@ export interface GenerationParams {
   taskEngineMode?: boolean;
 }
 
+/**
+ * Recover enough generation context for a page-level retry after a classroom
+ * reload. The first-generation path keeps these values in a ref, but a
+ * successful course can outlive that hook instance. The session copy is the
+ * durable browser-side handoff created by generation-preview; stage metadata
+ * fills the fields that older handoffs did not store.
+ */
+async function resolveRetryGenerationParams(
+  stage: NonNullable<ReturnType<typeof useStageStore.getState>['stage']>,
+): Promise<GenerationParams> {
+  let stored: Partial<GenerationParams> & {
+    pdfImages?: Array<{ id: string; assetId?: string; storageId?: string }>;
+  } = {};
+
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.sessionStorage.getItem('generationParams');
+      if (raw) stored = JSON.parse(raw) as typeof stored;
+    } catch {
+      // A malformed or unavailable session handoff must not block retrying a
+      // page that can still be generated from its outline and stage metadata.
+    }
+  }
+
+  const pdfImages = stored.pdfImages;
+  const imageMapping = { ...(stored.imageMapping ?? {}) };
+  if (pdfImages && Object.keys(imageMapping).length === 0) {
+    const storageIds = pdfImages
+      .filter((image) => !image.assetId && image.storageId)
+      .map((image) => image.storageId as string);
+    if (storageIds.length > 0) {
+      Object.assign(imageMapping, await loadImageMapping(storageIds));
+    }
+    for (const image of pdfImages) {
+      if (image.assetId) imageMapping[image.id] = image.assetId;
+    }
+  }
+
+  return {
+    precompiledMaterialSlug: stored.precompiledMaterialSlug,
+    pdfImages: stored.pdfImages,
+    imageMapping,
+    stageInfo: {
+      name: stage.name || '',
+      description: stage.description,
+      style: stage.style,
+    },
+    agents: stored.agents,
+    userProfile: stored.userProfile,
+    languageDirective: stored.languageDirective || stage.languageDirective,
+    taskEngineMode: stage.taskEngineMode,
+  };
+}
+
 export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
   const abortRef = useRef(false);
   const generatingRef = useRef(false);
   const mediaAbortRef = useRef<AbortController | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
   const lastParamsRef = useRef<GenerationParams | null>(null);
+  const retryingOutlineIdsRef = useRef(new Set<string>());
   const generateRemainingRef = useRef<((params: GenerationParams) => Promise<void>) | null>(null);
 
   const store = useStageStore;
@@ -1041,13 +1097,14 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
   const isGenerating = useCallback(() => generatingRef.current, []);
 
-  /** Retry a single failed outline from scratch (content → actions → TTS). */
+  /** Regenerate one outline from scratch (content → actions → TTS). */
   const retrySingleOutline = useCallback(
     async (outlineId: string) => {
       const state = store.getState();
-      const outline = state.failedOutlines.find((o) => o.id === outlineId);
-      const params = lastParamsRef.current;
-      if (!outline || !state.stage || !params) return;
+      const outline =
+        state.outlines.find((candidate) => candidate.id === outlineId) ??
+        state.failedOutlines.find((candidate) => candidate.id === outlineId);
+      if (!outline || !state.stage || retryingOutlineIdsRef.current.has(outlineId)) return;
       // A whole-outline retry runs content, actions and narration on the
       // operator's keys. The surfaces already withhold the affordance when
       // generation is not permitted; refusing here keeps the precondition and
@@ -1071,29 +1128,43 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         return;
       }
 
+      retryingOutlineIdsRef.current.add(outlineId);
+      const existingScene =
+        state.scenes.find((scene) => scene.outlineId === outline.id) ??
+        state.scenes.find((scene) => scene.order === outline.order);
+
+      let params: GenerationParams;
+
       const removeGeneratingOutline = () => {
         const current = store.getState().generatingOutlines;
         if (!current.some((o) => o.id === outlineId)) return;
         store.getState().setGeneratingOutlines(current.filter((o) => o.id !== outlineId));
       };
 
-      // Remove from failed list and mark as generating
+      // Failed outlines need a placeholder while they are retried. A
+      // successful scene stays visible in place while its replacement is
+      // prepared, so users never lose a working page because a retry failed.
+      const isRetryingFailedOutline = state.failedOutlines.some((o) => o.id === outlineId);
       store.getState().retryFailedOutline(outlineId);
-      store.getState().setGenerationStatus('generating');
-      const currentGenerating = store.getState().generatingOutlines;
-      if (!currentGenerating.some((o) => o.id === outline.id)) {
-        store.getState().setGeneratingOutlines([...currentGenerating, outline]);
+      if (!existingScene || isRetryingFailedOutline) {
+        store.getState().setGenerationStatus('generating');
+        const currentGenerating = store.getState().generatingOutlines;
+        if (!currentGenerating.some((o) => o.id === outline.id)) {
+          store.getState().setGeneratingOutlines([...currentGenerating, outline]);
+        }
       }
 
       const abortController = new AbortController();
       const signal = abortController.signal;
 
       try {
+        params = lastParamsRef.current ?? (await resolveRetryGenerationParams(state.stage));
+
         // Step 1: Content
         const contentResult = await fetchSceneContent(
           {
             outline,
-            allOutlines: state.outlines,
+            allOutlines: store.getState().outlines,
             stageId: state.stage.id,
             precompiledMaterialSlug: params.precompiledMaterialSlug,
             pdfImages: params.pdfImages,
@@ -1107,7 +1178,12 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         );
 
         if (!contentResult.success || !contentResult.content) {
-          store.getState().addFailedOutline(outline);
+          if (existingScene) {
+            toast.error(contentResult.error || getClientTranslation('generation.generationFailed'));
+          } else {
+            store.getState().addFailedOutline(outline);
+            store.getState().setGenerationStatus('paused');
+          }
           return;
         }
 
@@ -1123,7 +1199,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         const actionsResult = await fetchSceneActions(
           {
             outline: contentResult.effectiveOutline || outline,
-            allOutlines: state.outlines,
+            allOutlines: store.getState().outlines,
             content: contentResult.content,
             stageId: state.stage.id,
             agents: params.agents,
@@ -1135,7 +1211,12 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         );
 
         if (!actionsResult.success || !actionsResult.scene) {
-          store.getState().addFailedOutline(outline);
+          if (existingScene) {
+            toast.error(actionsResult.error || getClientTranslation('generation.generationFailed'));
+          } else {
+            store.getState().addFailedOutline(outline);
+            store.getState().setGenerationStatus('paused');
+          }
           return;
         }
 
@@ -1155,7 +1236,12 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             signal,
           );
           if (!ttsResult.success) {
-            store.getState().addFailedOutline(outline);
+            if (existingScene) {
+              toast.error(ttsResult.error || getClientTranslation('generation.speechFailed'));
+            } else {
+              store.getState().addFailedOutline(outline);
+              store.getState().setGenerationStatus('paused');
+            }
             return;
           }
         }
@@ -1166,7 +1252,21 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         }
 
         removeGeneratingOutline();
-        useStageStore.getState().addScene(actionsResult.scene);
+        if (existingScene) {
+          // Keep the stable scene id so navigation, playback state and
+          // interactive iframe ownership survive the replacement. The old
+          // scene is untouched until every generation phase has succeeded.
+          useStageStore.getState().updateScene(existingScene.id, {
+            title: actionsResult.scene.title,
+            order: actionsResult.scene.order,
+            content: actionsResult.scene.content,
+            actions: actionsResult.scene.actions,
+            updatedAt: actionsResult.scene.updatedAt,
+            outlineId: outline.id,
+          });
+        } else {
+          useStageStore.getState().addScene(actionsResult.scene);
+        }
 
         // Resume remaining generation if there are pending outlines
         if (store.getState().generatingOutlines.length > 0 && lastParamsRef.current) {
@@ -1180,8 +1280,15 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         }
       } catch (err) {
         if (!isAbortError(err)) {
-          store.getState().addFailedOutline(outline);
+          if (existingScene) {
+            toast.error(messageFromError(err, getClientTranslation('generation.generationFailed')));
+          } else {
+            store.getState().addFailedOutline(outline);
+            store.getState().setGenerationStatus('paused');
+          }
         }
+      } finally {
+        retryingOutlineIdsRef.current.delete(outlineId);
       }
     },
     [store],

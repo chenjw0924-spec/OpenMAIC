@@ -351,6 +351,7 @@ export async function POST(req: NextRequest) {
     );
 
     const userLocale = req.headers?.get('x-user-locale') ?? '';
+    let contentFailureCode: string | undefined;
 
     const content = await generateSceneContent(effectiveOutline, aiCall, {
       assignedImages,
@@ -363,6 +364,13 @@ export async function POST(req: NextRequest) {
       targetLanguage: userLocale || undefined,
       userRequirements: requirements,
       allowProceduralSkill: vocationalActive,
+      logger: log,
+      onFailure: (failure) => {
+        contentFailureCode = failure.code;
+        log.error(
+          `Content validation failed: "${effectiveOutline.title}" [type=${effectiveOutline.type}, code=${failure.code}]`,
+        );
+      },
       ...(effectiveOutline.type === 'pbl'
         ? {
             pblLoopFallback: (input) =>
@@ -372,12 +380,15 @@ export async function POST(req: NextRequest) {
     });
 
     if (!content) {
-      log.error(`Failed to generate content for: "${effectiveOutline.title}"`);
+      const reason = contentFailureCode ?? 'empty-content';
+      log.error(`Failed to generate content for: "${effectiveOutline.title}" [reason=${reason}]`);
 
       return apiError(
         'GENERATION_FAILED',
         500,
         `Failed to generate content: ${effectiveOutline.title}`,
+        `Generation content was rejected (${reason}). Please retry this page.`,
+        reason,
       );
     }
 
