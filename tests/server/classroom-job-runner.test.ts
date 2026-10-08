@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ClassroomGenerationCheckpoint } from '@/lib/server/classroom-generation';
 
 const mocks = vi.hoisted(() => ({
   generateClassroom: vi.fn(),
@@ -30,6 +31,8 @@ vi.mock('@/lib/server/classroom-job-store', () => ({
   updateClassroomGenerationJobProgress: mocks.updateClassroomGenerationJobProgress,
 }));
 
+vi.mock('@/lib/ai/llm', () => ({ LLM_REQUEST_TIMEOUT_MS: 220_000 }));
+
 vi.mock('@/lib/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
@@ -41,7 +44,23 @@ describe('classroom job runner', () => {
   });
 
   it('persists a checkpoint and leaves the job queued after one bounded step', async () => {
-    const checkpoint = { version: 1, phase: 'scene_content' };
+    const checkpoint = {
+      version: 1,
+      phase: 'scene_content',
+      stageId: 'stage-1',
+      stage: {
+        id: 'stage-1',
+        name: 'A course',
+        style: 'interactive',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      outlines: [],
+      languageDirective: 'Use English.',
+      agents: [],
+      nextSceneIndex: 0,
+      scenes: [],
+    } satisfies ClassroomGenerationCheckpoint;
     const { ClassroomGenerationCheckpointError } =
       await import('@/lib/server/classroom-generation');
     mocks.claimClassroomGenerationJob.mockResolvedValue({

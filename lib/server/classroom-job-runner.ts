@@ -1,4 +1,5 @@
 import { createLogger } from '@/lib/logger';
+import { LLM_REQUEST_TIMEOUT_MS } from '@/lib/ai/llm';
 import {
   ClassroomGenerationCheckpointError,
   generateClassroom,
@@ -34,6 +35,7 @@ export function runClassroomGenerationJob(
       const result = await generateClassroom(input, {
         baseUrl,
         ownerId,
+        signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
         resume: claimed.workflow?.checkpoint,
         checkpointAfterInitialization: !claimed.workflow?.checkpoint,
         checkpointAfterEachScene: true,

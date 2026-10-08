@@ -124,6 +124,53 @@ describe('callLLM retryable-failure fallback', () => {
     expect(aiMock.generateText).toHaveBeenCalledTimes(2);
   });
 
+  it('shares the original deadline with fallback and honors cancellation', async () => {
+    fallbackMock.shouldFallbackFor.mockReturnValue(true);
+    fallbackMock.resolveFallbackModel.mockResolvedValue({
+      model: 'fallback-model' as never,
+      modelString: 'test:fallback',
+    });
+    const controller = new AbortController();
+    aiMock.generateText.mockRejectedValueOnce(
+      Object.assign(new Error('provider unavailable'), { statusCode: 503 }),
+    );
+
+    await callLLM(
+      { model: 'primary-model', prompt: 'hi', abortSignal: controller.signal } as never,
+      'scene-content',
+      undefined,
+      undefined,
+      { serverManaged: true },
+    );
+
+    const primarySignal = aiMock.generateText.mock.calls[0][0].abortSignal as AbortSignal;
+    const fallbackSignal = aiMock.generateText.mock.calls[1][0].abortSignal as AbortSignal;
+    expect(fallbackSignal).toBe(primarySignal);
+    controller.abort();
+    expect(fallbackSignal.aborted).toBe(true);
+  });
+
+  it('does not retry or fall back after a deadline abort', async () => {
+    fallbackMock.shouldFallbackFor.mockReturnValue(true);
+    fallbackMock.resolveFallbackModel.mockResolvedValue({
+      model: 'fallback-model' as never,
+      modelString: 'test:fallback',
+    });
+    const timeout = new DOMException('request deadline exceeded', 'TimeoutError');
+    aiMock.generateText.mockRejectedValueOnce(timeout);
+
+    await expect(
+      callLLM(
+        { model: 'primary-model', prompt: 'hi' } as never,
+        'scene-content',
+        { retries: 1 },
+        undefined,
+        { serverManaged: true },
+      ),
+    ).rejects.toBe(timeout);
+    expect(aiMock.generateText).toHaveBeenCalledTimes(1);
+  });
+
   it('does not fall back when fallback is disabled for the call', async () => {
     fallbackMock.shouldFallbackFor.mockReturnValue(true);
     fallbackMock.resolveFallbackModel.mockResolvedValue({

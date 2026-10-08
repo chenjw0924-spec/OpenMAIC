@@ -27,7 +27,7 @@ const log = createLogger('LLM');
 export const LLM_REQUEST_TIMEOUT_MS = (() => {
   const configured = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '', 10);
   if (Number.isFinite(configured) && configured >= 30_000) {
-    return Math.min(configured, 240_000);
+    return Math.min(configured, 220_000);
   }
   return 220_000;
 })();
@@ -364,6 +364,9 @@ export async function callLLM<T extends GenerateTextParams>(
   fallbackOptions?: { enabled?: boolean; serverManaged?: boolean },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<GenerateTextResult<any, any>> {
+  // Retries and fallback share one deadline, including the caller's shorter
+  // step budget. A fresh timer per round could outlive the Vercel request.
+  const requestSignal = withLlmRequestTimeout(params.abortSignal);
   const maxAttempts = (retryOptions?.retries ?? 0) + 1;
   const validate = retryOptions?.validate ?? (maxAttempts > 1 ? DEFAULT_VALIDATE : undefined);
   // The fallback only protects primaries the SERVER resolved (a routed stage
@@ -394,11 +397,12 @@ export async function callLLM<T extends GenerateTextParams>(
     | { ok: false; error: unknown; result?: GenerateTextResult<any, any>; finishReason?: string }
   > {
     try {
+      requestSignal.throwIfAborted();
       const effectiveThinking = thinking ?? getGlobalThinkingConfig();
       const injectedParams = injectProviderOptions(
         {
           ...roundParams,
-          abortSignal: withLlmRequestTimeout(roundParams.abortSignal),
+          abortSignal: requestSignal,
         },
         effectiveThinking,
       );
@@ -460,6 +464,8 @@ export async function callLLM<T extends GenerateTextParams>(
     if (round.ok) return round.result;
     if (round.error !== undefined) {
       lastError = round.error;
+      if (requestSignal.aborted) throw requestSignal.reason;
+      if (isAbortLike(round.error)) throw round.error;
       if (attempt < maxAttempts) {
         log.warn(
           `[${source}] Call failed (attempt ${attempt}/${maxAttempts}), retrying...`,
@@ -497,11 +503,10 @@ export async function callLLM<T extends GenerateTextParams>(
       );
       // The fallback round is the LAST attempt: run it with no SDK-internal
       // retries on top (a 503 on both models must not cost 3+3 upstream
-      // calls), and do not reuse the caller's abort signal — an
-      // AbortSignal.timeout that already fired would make the fallback round
-      // impossible to run.
+      // calls). Keep the original deadline and cancellation signal so this
+      // last round only spends the time left in the same request.
       const round = await runRound(
-        { ...params, model: fallback.model, maxRetries: 0, abortSignal: undefined } as T,
+        { ...params, model: fallback.model, maxRetries: 0 } as T,
         'fallback',
       );
       if (round.ok) return round.result;

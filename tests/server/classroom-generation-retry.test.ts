@@ -231,6 +231,22 @@ describe('classroom scene generation retries', () => {
     expect(contentError!.checkpoint.phase).toBe('scene_actions');
     expect(mocks.generateSceneActions).not.toHaveBeenCalled();
 
+    mocks.generateSceneActions.mockRejectedValueOnce(
+      new DOMException('provider deadline exceeded', 'TimeoutError'),
+    );
+    await expect(
+      generateClassroom(input, {
+        ...options,
+        resume: contentError!.checkpoint,
+        checkpointAfterInitialization: false,
+      }),
+    ).rejects.toMatchObject({ name: 'TimeoutError' });
+    // The timed-out invocation must not run a second model call or remove
+    // the reservation needed to resume the saved content.
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(1);
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseClassroomReservation).not.toHaveBeenCalled();
+
     let actionsError: ClassroomGenerationCheckpointError;
     try {
       await generateClassroom(input, {
@@ -245,7 +261,7 @@ describe('classroom scene generation retries', () => {
 
     expect(actionsError!.checkpoint.phase).toBe('scene_content');
     expect(mocks.generateSceneContent).toHaveBeenCalledTimes(1);
-    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(1);
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(2);
   });
 
   it('forwards classroom thinking config to scene retry LLM calls', async () => {

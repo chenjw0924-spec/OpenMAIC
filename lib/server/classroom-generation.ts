@@ -302,13 +302,32 @@ export async function generateClassroom(
     resume || options.checkpointAfterInitialization || options.checkpointAfterEachScene,
   );
   let checkpointed = false;
+  const boundedCallLLM: typeof callLLM = (params, source, retries, thinking, fallback) =>
+    callLLM(
+      {
+        ...params,
+        ...(options.signal
+          ? {
+              abortSignal: params.abortSignal
+                ? AbortSignal.any([params.abortSignal, options.signal])
+                : options.signal,
+            }
+          : {}),
+      },
+      source,
+      retries,
+      thinking,
+      fallback,
+    );
 
-  await options.onProgress?.({
-    step: 'initializing',
-    progress: 5,
-    message: 'Initializing classroom generation',
-    scenesGenerated: 0,
-  });
+  if (!resume) {
+    await options.onProgress?.({
+      step: 'initializing',
+      progress: 5,
+      message: 'Initializing classroom generation',
+      scenesGenerated: 0,
+    });
+  }
 
   const {
     model: languageModel,
@@ -339,7 +358,7 @@ export async function generateClassroom(
   let searchQueryServerManaged = serverManaged;
 
   const aiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
-    const result = await callLLM(
+    const result = await boundedCallLLM(
       {
         model: languageModel,
         messages: [
@@ -441,7 +460,7 @@ export async function generateClassroom(
     const stage = (outlineType ? `scene-content:${outlineType}` : 'scene-content') as LlmStage;
     const { model, outputWindow, thinking, serverManaged } = await resolveStageModel(stage);
     const aiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
-      const result = await callLLM(
+      const result = await boundedCallLLM(
         {
           model,
           messages: [
@@ -469,7 +488,7 @@ export async function generateClassroom(
     const { model, outputWindow, thinking, serverManaged } =
       await resolveStageModel('agent-profiles');
     agentProfilesAiCall = async (systemPrompt, userPrompt, _images) => {
-      const result = await callLLM(
+      const result = await boundedCallLLM(
         {
           model,
           messages: [
@@ -495,7 +514,7 @@ export async function generateClassroom(
     const { model, outputWindow, thinking, serverManaged } =
       await resolveStageModel('scene-actions');
     sceneActionsAiCall = async (systemPrompt, userPrompt, _images) => {
-      const result = await callLLM(
+      const result = await boundedCallLLM(
         {
           model,
           messages: [
@@ -516,7 +535,7 @@ export async function generateClassroom(
   };
 
   const searchQueryAiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
-    const result = await callLLM(
+    const result = await boundedCallLLM(
       {
         model: searchQueryModel,
         messages: [
@@ -539,12 +558,14 @@ export async function generateClassroom(
   const vocationalActive = resolveVocationalActive(requirements);
   const pdfText = pdfContent?.text || undefined;
 
-  await options.onProgress?.({
-    step: 'researching',
-    progress: 10,
-    message: 'Researching topic',
-    scenesGenerated: 0,
-  });
+  if (!resume) {
+    await options.onProgress?.({
+      step: 'researching',
+      progress: 10,
+      message: 'Researching topic',
+      scenesGenerated: 0,
+    });
+  }
 
   // Web search (optional, graceful degradation)
   let researchContext: string | undefined = resume?.researchContext;
@@ -600,12 +621,14 @@ export async function generateClassroom(
     }
   }
 
-  await options.onProgress?.({
-    step: 'generating_outlines',
-    progress: 15,
-    message: 'Generating scene outlines',
-    scenesGenerated: 0,
-  });
+  if (!resume) {
+    await options.onProgress?.({
+      step: 'generating_outlines',
+      progress: 15,
+      message: 'Generating scene outlines',
+      scenesGenerated: 0,
+    });
+  }
 
   let languageDirective: string;
   let courseTitle: string | undefined;
@@ -639,13 +662,15 @@ export async function generateClassroom(
     `Generated ${outlines.length} scene outlines (languageDirective: ${languageDirective}, courseTitle: ${courseTitle ?? 'n/a'})`,
   );
 
-  await options.onProgress?.({
-    step: 'generating_outlines',
-    progress: 30,
-    message: `Generated ${outlines.length} scene outlines`,
-    scenesGenerated: 0,
-    totalScenes: outlines.length,
-  });
+  if (!resume) {
+    await options.onProgress?.({
+      step: 'generating_outlines',
+      progress: 30,
+      message: `Generated ${outlines.length} scene outlines`,
+      scenesGenerated: 0,
+      totalScenes: outlines.length,
+    });
+  }
 
   // Resolve agents based on agentMode — now AFTER outlines so we can use languageDirective
   let agents: AgentInfo[];
@@ -815,7 +840,7 @@ export async function generateClassroom(
                               generatePBLV2Project(
                                 input,
                                 contentCall.model,
-                                callLLM,
+                                boundedCallLLM,
                                 { logger: log },
                                 contentCall.thinking,
                               ),
@@ -824,7 +849,11 @@ export async function generateClassroom(
                     }),
                   {
                     label: `scene ${index + 1}/${outlines.length} content`,
-                    ...(resumable ? { maxRetries: 1 } : {}),
+                    // A resumable job retries by starting a new bounded
+                    // invocation from its checkpoint. Retrying the same LLM
+                    // call here could exceed the route's 240-second budget
+                    // when the first call reaches the 220-second timeout.
+                    ...(resumable ? { maxRetries: 0 } : {}),
                     shouldRetryResult: (result) => result === null,
                     onRetry: (event) => reportSceneRetry('content', event),
                   },
@@ -857,7 +886,10 @@ export async function generateClassroom(
           }),
         {
           label: `scene ${index + 1}/${outlines.length} actions`,
-          ...(resumable ? { maxRetries: 1 } : {}),
+          // The durable job retry is the retry budget for server-side runs;
+          // keeping this invocation to one model call leaves time to persist
+          // the failure/checkpoint before Vercel reclaims the function.
+          ...(resumable ? { maxRetries: 0 } : {}),
           onRetry: (event) => reportSceneRetry('actions', event),
         },
       );
@@ -1018,7 +1050,7 @@ export async function generateClassroom(
       ...(ttsWarning ? { warning: ttsWarning } : {}),
     };
   } finally {
-    if (!persisted && !checkpointed) {
+    if (!persisted && !checkpointed && !resume) {
       await releaseClassroomReservation(stageId);
     }
   }
