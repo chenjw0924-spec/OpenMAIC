@@ -5,6 +5,7 @@ import type {
   ClassroomGenerationStep,
   GenerateClassroomInput,
   GenerateClassroomResult,
+  ClassroomGenerationCheckpoint,
 } from '@/lib/server/classroom-generation';
 import {
   CLASSROOM_JOBS_DIR,
@@ -45,6 +46,9 @@ export interface ClassroomGenerationJob {
   };
   error?: string;
   ownerId?: string;
+  workflow?: {
+    checkpoint: ClassroomGenerationCheckpoint;
+  };
 }
 
 function jobFilePath(jobId: string) {
@@ -86,7 +90,7 @@ async function withJobLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /** Max age (ms) before a "running" job without an active runner is considered stale. */
-const STALE_JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const STALE_JOB_TIMEOUT_MS = 5 * 60 * 1000; // one step is bounded below 4 minutes
 
 function markStaleIfNeeded(job: ClassroomGenerationJob): ClassroomGenerationJob {
   if (job.status !== 'running') return job;
@@ -94,11 +98,11 @@ function markStaleIfNeeded(job: ClassroomGenerationJob): ClassroomGenerationJob 
   if (Date.now() - updatedAt > STALE_JOB_TIMEOUT_MS) {
     return {
       ...job,
-      status: 'failed',
-      step: 'failed',
-      message: 'Job appears stale (no progress update for 30 minutes)',
-      error: 'Stale job: process may have restarted during generation',
-      completedAt: new Date().toISOString(),
+      status: 'queued',
+      step: job.step === 'failed' ? 'queued' : job.step,
+      message: 'Generation worker was reclaimed; resuming from the last checkpoint',
+      error: undefined,
+      completedAt: undefined,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -248,7 +252,10 @@ export async function claimClassroomGenerationJob(
         [jobId],
       );
       const existing = result.rows[0]?.data;
-      if (!existing || existing.status !== 'queued') {
+      const staleRunning =
+        existing?.status === 'running' &&
+        Date.now() - new Date(existing.updatedAt).getTime() > STALE_JOB_TIMEOUT_MS;
+      if (!existing || (existing.status !== 'queued' && !staleRunning)) {
         await client.query('COMMIT');
         return null;
       }
@@ -275,7 +282,10 @@ export async function claimClassroomGenerationJob(
 
   return withJobLock(jobId, async () => {
     const existing = await readClassroomGenerationJob(jobId);
-    if (!existing || existing.status !== 'queued') return null;
+    const staleRunning =
+      existing?.status === 'running' &&
+      Date.now() - new Date(existing.updatedAt).getTime() > STALE_JOB_TIMEOUT_MS;
+    if (!existing || (existing.status !== 'queued' && !staleRunning)) return null;
 
     const updated: ClassroomGenerationJob = {
       ...existing,
@@ -301,6 +311,41 @@ export async function updateClassroomGenerationJobProgress(
     message: progress.message,
     scenesGenerated: progress.scenesGenerated,
     totalScenes: progress.totalScenes,
+  });
+}
+
+export async function queueClassroomGenerationCheckpoint(
+  jobId: string,
+  checkpoint: ClassroomGenerationCheckpoint,
+): Promise<ClassroomGenerationJob> {
+  const totalScenes = checkpoint.outlines.length;
+  const sceneProgress =
+    totalScenes > 0 ? 30 + Math.floor((checkpoint.nextSceneIndex / totalScenes) * 60) : 30;
+  const progress =
+    checkpoint.phase === 'media' ? 90 : checkpoint.phase === 'tts' ? 94 : sceneProgress;
+  const step =
+    checkpoint.phase === 'media'
+      ? 'generating_media'
+      : checkpoint.phase === 'tts'
+        ? 'generating_tts'
+        : 'generating_scenes';
+  const message =
+    checkpoint.phase === 'media'
+      ? 'Scene generation complete; media generation queued'
+      : checkpoint.phase === 'tts'
+        ? 'Media generation complete; TTS generation queued'
+        : `Generated ${checkpoint.scenes.length}/${totalScenes} scenes`;
+
+  return updateClassroomGenerationJob(jobId, {
+    status: 'queued',
+    step,
+    progress,
+    message,
+    scenesGenerated: checkpoint.scenes.length,
+    totalScenes,
+    workflow: { checkpoint },
+    error: undefined,
+    completedAt: undefined,
   });
 }
 

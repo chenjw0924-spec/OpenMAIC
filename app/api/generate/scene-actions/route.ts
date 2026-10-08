@@ -33,7 +33,7 @@ import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 
 const log = createLogger('Scene Actions API');
 
-export const maxDuration = 60;
+export const maxDuration = 240;
 
 /**
  * Action narration is an enhancement over the deterministic actions already

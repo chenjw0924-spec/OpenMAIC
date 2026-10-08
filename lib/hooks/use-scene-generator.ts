@@ -187,6 +187,7 @@ export async function fetchSceneContent(
         label: `scene content "${params.outline.title}"`,
         shouldRetryResult: (result) => !result.success || !result.content,
         ...retryOptions,
+        maxRetries: retryOptions?.maxRetries ?? 1,
         signal,
       },
     );
@@ -236,6 +237,7 @@ export async function fetchSceneActions(
         label: `scene actions "${params.outline.title}"`,
         shouldRetryResult: (result) => !result.success || !result.scene,
         ...retryOptions,
+        maxRetries: retryOptions?.maxRetries ?? 1,
         signal,
       },
     );
@@ -392,6 +394,7 @@ export async function generateAndStoreTTS(
         label: `tts "${requestId}"`,
         shouldRetryResult: (result) => !result.success || !result.base64 || !result.format,
         ...retryOptions,
+        maxRetries: retryOptions?.maxRetries ?? 1,
         signal,
       },
     );

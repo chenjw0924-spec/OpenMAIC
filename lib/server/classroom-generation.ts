@@ -43,7 +43,7 @@ import {
   type ClassroomTtsCoverage,
 } from '@/lib/server/classroom-media-generation';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
-import type { UserRequirements } from '@/lib/types/generation';
+import type { SceneOutline, UserRequirements } from '@/lib/types/generation';
 import type { Scene, Stage } from '@/lib/types/stage';
 import { AGENT_COLOR_PALETTE, AGENT_DEFAULT_AVATARS } from '@/lib/constants/agent-defaults';
 
@@ -87,6 +87,40 @@ export interface ClassroomGenerationProgress {
   totalScenes?: number;
 }
 
+export type ClassroomGenerationCheckpointPhase =
+  | 'scenes'
+  | 'scene_content'
+  | 'scene_actions'
+  | 'media'
+  | 'tts';
+
+/** Serializable state between short Vercel function invocations. */
+export interface ClassroomGenerationCheckpoint {
+  version: 1;
+  phase: ClassroomGenerationCheckpointPhase;
+  stageId: string;
+  stage: Stage;
+  outlines: SceneOutline[];
+  languageDirective: string;
+  courseTitle?: string;
+  agents: AgentInfo[];
+  researchContext?: string;
+  nextSceneIndex: number;
+  scenes: Scene[];
+  pendingOutline?: SceneOutline;
+  pendingContent?: unknown;
+}
+
+export class ClassroomGenerationCheckpointError extends Error {
+  readonly checkpoint: ClassroomGenerationCheckpoint;
+
+  constructor(checkpoint: ClassroomGenerationCheckpoint) {
+    super('Classroom generation checkpoint saved');
+    this.name = 'ClassroomGenerationCheckpointError';
+    this.checkpoint = checkpoint;
+  }
+}
+
 export interface GenerateClassroomResult {
   id: string;
   url: string;
@@ -106,10 +140,10 @@ export interface GenerateClassroomResult {
   warning?: string;
 }
 
-function createInMemoryStore(stage: Stage): StageStore {
+function createInMemoryStore(stage: Stage, initialScenes: Scene[] = []): StageStore {
   let state = {
     stage: stage as Stage | null,
-    scenes: [] as Scene[],
+    scenes: initialScenes,
     currentSceneId: null as string | null,
     mode: 'playback' as const,
   };
@@ -217,7 +251,8 @@ async function reserveGeneratedClassroom(
     const id = generateClassroomId();
     const stage = buildStage(id);
     try {
-      await reserveClassroom(id, stage, ownerId);
+      if (ownerId) await reserveClassroom(id, stage, ownerId);
+      else await reserveClassroom(id, stage);
       return { id, stage };
     } catch (error) {
       if (
@@ -256,9 +291,17 @@ export async function generateClassroom(
     ownerId?: string;
     signal?: AbortSignal;
     onProgress?: (progress: ClassroomGenerationProgress) => Promise<void> | void;
+    resume?: ClassroomGenerationCheckpoint;
+    checkpointAfterInitialization?: boolean;
+    checkpointAfterEachScene?: boolean;
   },
 ): Promise<GenerateClassroomResult> {
   const { requirement, pdfContent } = input;
+  const resume = options.resume;
+  const resumable = Boolean(
+    resume || options.checkpointAfterInitialization || options.checkpointAfterEachScene,
+  );
+  let checkpointed = false;
 
   await options.onProgress?.({
     step: 'initializing',
@@ -504,8 +547,8 @@ export async function generateClassroom(
   });
 
   // Web search (optional, graceful degradation)
-  let researchContext: string | undefined;
-  if (input.enableWebSearch) {
+  let researchContext: string | undefined = resume?.researchContext;
+  if (!resume && input.enableWebSearch) {
     const webSearchConfig = resolveClassroomWebSearchConfig(input);
     if (webSearchConfig) {
       // Re-resolve the query-rewrite model only when explicitly routed. If
@@ -564,25 +607,34 @@ export async function generateClassroom(
     scenesGenerated: 0,
   });
 
-  const outlinesResult = await generateSceneOutlinesFromRequirements(
-    requirements,
-    pdfText,
-    undefined,
-    aiCall,
-    {
-      imageGenerationEnabled: input.enableImageGeneration,
-      videoGenerationEnabled: input.enableVideoGeneration,
-      researchContext,
-      // NO teacherContext — agents haven't been generated yet
-    },
-  );
+  let languageDirective: string;
+  let courseTitle: string | undefined;
+  let outlines: SceneOutline[];
+  if (resume) {
+    languageDirective = resume.languageDirective;
+    courseTitle = resume.courseTitle;
+    outlines = resume.outlines;
+  } else {
+    const outlinesResult = await generateSceneOutlinesFromRequirements(
+      requirements,
+      pdfText,
+      undefined,
+      aiCall,
+      {
+        imageGenerationEnabled: input.enableImageGeneration,
+        videoGenerationEnabled: input.enableVideoGeneration,
+        researchContext,
+        // NO teacherContext — agents haven't been generated yet
+      },
+    );
 
-  if (!outlinesResult.success || !outlinesResult.data) {
-    log.error('Failed to generate outlines:', outlinesResult.error);
-    throw new Error(outlinesResult.error || 'Failed to generate scene outlines');
+    if (!outlinesResult.success || !outlinesResult.data) {
+      log.error('Failed to generate outlines:', outlinesResult.error);
+      throw new Error(outlinesResult.error || 'Failed to generate scene outlines');
+    }
+
+    ({ languageDirective, courseTitle, outlines } = outlinesResult.data);
   }
-
-  const { languageDirective, courseTitle, outlines } = outlinesResult.data;
   log.info(
     `Generated ${outlines.length} scene outlines (languageDirective: ${languageDirective}, courseTitle: ${courseTitle ?? 'n/a'})`,
   );
@@ -598,7 +650,9 @@ export async function generateClassroom(
   // Resolve agents based on agentMode — now AFTER outlines so we can use languageDirective
   let agents: AgentInfo[];
   const agentMode = input.agentMode || 'default';
-  if (agentMode === 'generate') {
+  if (resume) {
+    agents = resume.agents;
+  } else if (agentMode === 'generate') {
     log.info('Generating custom agent profiles via LLM...');
     try {
       const agentProfilesCall = await getAgentProfilesAiCall();
@@ -612,37 +666,39 @@ export async function generateClassroom(
     agents = getDefaultAgents();
   }
 
-  const { id: stageId, stage } = await reserveGeneratedClassroom(
-    (id) => ({
-      id,
-      name: courseTitle || outlines[0]?.title || requirement.slice(0, 50),
-      description: undefined,
-      languageDirective,
-      videoManifest: buildVideoManifestFromOutlines(outlines),
-      style: 'interactive',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      // For LLM-generated agents, embed full configs so the client can
-      // hydrate the agent registry without prior IndexedDB data.
-      // For default agents, just record IDs — the client already has them.
-      ...(agentMode === 'generate'
-        ? {
-            generatedAgentConfigs: agents.map((a, i) => ({
-              id: a.id,
-              name: a.name,
-              role: a.role,
-              persona: a.persona || '',
-              avatar: AGENT_DEFAULT_AVATARS[i % AGENT_DEFAULT_AVATARS.length],
-              color: AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length],
-              priority: a.role === 'teacher' ? 10 : a.role === 'assistant' ? 7 : 5,
-            })),
-          }
-        : {
-            agentIds: agents.map((a) => a.id),
-          }),
-    }),
-    options.ownerId,
-  );
+  const { id: stageId, stage } = resume
+    ? { id: resume.stageId, stage: resume.stage }
+    : await reserveGeneratedClassroom(
+        (id) => ({
+          id,
+          name: courseTitle || outlines[0]?.title || requirement.slice(0, 50),
+          description: undefined,
+          languageDirective,
+          videoManifest: buildVideoManifestFromOutlines(outlines),
+          style: 'interactive',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          // For LLM-generated agents, embed full configs so the client can
+          // hydrate the agent registry without prior IndexedDB data.
+          // For default agents, just record IDs — the client already has them.
+          ...(agentMode === 'generate'
+            ? {
+                generatedAgentConfigs: agents.map((a, i) => ({
+                  id: a.id,
+                  name: a.name,
+                  role: a.role,
+                  persona: a.persona || '',
+                  avatar: AGENT_DEFAULT_AVATARS[i % AGENT_DEFAULT_AVATARS.length],
+                  color: AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length],
+                  priority: a.role === 'teacher' ? 10 : a.role === 'assistant' ? 7 : 5,
+                })),
+              }
+            : {
+                agentIds: agents.map((a) => a.id),
+              }),
+        }),
+        ...(options.ownerId ? [options.ownerId] : []),
+      );
 
   // The reservation above claims the id; everything below owns it. If
   // generation throws before `persistClassroom` succeeds, release the
@@ -650,16 +706,66 @@ export async function generateClassroom(
   // file behind. `persisted` is the completion marker.
   let persisted: Awaited<ReturnType<typeof persistClassroom>> | undefined;
   try {
-    const store = createInMemoryStore(stage);
+    const store = createInMemoryStore(stage, resume?.scenes ?? []);
     const api = createStageAPI(store);
 
+    const buildCheckpoint = (
+      phase: ClassroomGenerationCheckpointPhase,
+      nextSceneIndex: number,
+      pending?: { outline: SceneOutline; content: unknown },
+    ): ClassroomGenerationCheckpoint => ({
+      version: 1,
+      phase,
+      stageId,
+      stage,
+      outlines,
+      languageDirective,
+      ...(courseTitle ? { courseTitle } : {}),
+      agents,
+      ...(researchContext ? { researchContext } : {}),
+      nextSceneIndex,
+      scenes: store.getState().scenes,
+      ...(pending ? { pendingOutline: pending.outline, pendingContent: pending.content } : {}),
+    });
+
+    const saveCheckpointAndPause = (
+      phase: ClassroomGenerationCheckpointPhase,
+      nextSceneIndex: number,
+      pending?: { outline: SceneOutline; content: unknown },
+    ): never => {
+      checkpointed = true;
+      throw new ClassroomGenerationCheckpointError(buildCheckpoint(phase, nextSceneIndex, pending));
+    };
+
+    if (options.checkpointAfterInitialization && !resume) {
+      await options.onProgress?.({
+        step: 'generating_outlines',
+        progress: 30,
+        message: `Prepared ${outlines.length} scene outlines`,
+        scenesGenerated: 0,
+        totalScenes: outlines.length,
+      });
+      saveCheckpointAndPause('scene_content', 0);
+    }
+
     log.info('Stage 2: Generating scene content and actions...');
-    let generatedScenes = 0;
+    let generatedScenes = resume?.scenes.length ?? 0;
+    let nextSceneIndex = resume?.nextSceneIndex ?? 0;
 
     for (const [index, outline] of outlines.entries()) {
+      const isScenePhase =
+        !resume ||
+        resume.phase === 'scenes' ||
+        resume.phase === 'scene_content' ||
+        resume.phase === 'scene_actions';
+      if (!isScenePhase || index < nextSceneIndex) continue;
       const safeOutline = applyOutlineFallbacks(outline, true, {
         allowProceduralSkill: vocationalActive,
       });
+      const pendingSceneOutline =
+        resume?.phase === 'scene_actions' && index === nextSceneIndex
+          ? (resume.pendingOutline ?? safeOutline)
+          : safeOutline;
       const progressStart = 30 + Math.floor((index / Math.max(outlines.length, 1)) * 60);
 
       await options.onProgress?.({
@@ -690,63 +796,84 @@ export async function generateClassroom(
       // gets the provider-bound AICallFn and the app injects its agentic PBL loop
       // as the classified fallback, preserving single-call → loop routing.
       const contentCall = await resolveSceneContentCall(safeOutline.type);
-      const content = await (async () => {
-        try {
-          return await withGenerationRetry(
-            () =>
-              generateSceneContent(safeOutline, contentCall.aiCall, {
-                agents,
-                languageDirective,
-                allowProceduralSkill: vocationalActive,
-                ...(safeOutline.type === 'pbl'
-                  ? {
-                      pblLoopFallback: (input) =>
-                        generatePBLV2Project(
-                          input,
-                          contentCall.model,
-                          callLLM,
-                          { logger: log },
-                          contentCall.thinking,
-                        ),
-                    }
-                  : {}),
-              }),
-            {
-              label: `scene ${index + 1}/${outlines.length} content`,
-              shouldRetryResult: (result) => result === null,
-              onRetry: (event) => reportSceneRetry('content', event),
-            },
-          );
-        } catch (error) {
-          return containPBLGenerationError(error, safeOutline.title);
-        }
-      })();
+      const content =
+        resume?.phase === 'scene_actions' &&
+        index === nextSceneIndex &&
+        resume.pendingContent !== undefined
+          ? (resume.pendingContent as Awaited<ReturnType<typeof generateSceneContent>>)
+          : await (async () => {
+              try {
+                return await withGenerationRetry(
+                  () =>
+                    generateSceneContent(pendingSceneOutline, contentCall.aiCall, {
+                      agents,
+                      languageDirective,
+                      allowProceduralSkill: vocationalActive,
+                      ...(pendingSceneOutline.type === 'pbl'
+                        ? {
+                            pblLoopFallback: (input) =>
+                              generatePBLV2Project(
+                                input,
+                                contentCall.model,
+                                callLLM,
+                                { logger: log },
+                                contentCall.thinking,
+                              ),
+                          }
+                        : {}),
+                    }),
+                  {
+                    label: `scene ${index + 1}/${outlines.length} content`,
+                    ...(resumable ? { maxRetries: 1 } : {}),
+                    shouldRetryResult: (result) => result === null,
+                    onRetry: (event) => reportSceneRetry('content', event),
+                  },
+                );
+              } catch (error) {
+                return containPBLGenerationError(error, pendingSceneOutline.title);
+              }
+            })();
       if (!content) {
-        log.warn(`Skipping scene "${safeOutline.title}" — content generation failed`);
+        log.warn(`Skipping scene "${pendingSceneOutline.title}" — content generation failed`);
+        if (resumable) {
+          throw new Error(`Scene content generation failed: ${pendingSceneOutline.title}`);
+        }
         continue;
+      }
+
+      if (options.checkpointAfterEachScene && (!resume || resume.phase !== 'scene_actions')) {
+        saveCheckpointAndPause('scene_actions', index, {
+          outline: pendingSceneOutline,
+          content,
+        });
       }
 
       const actionsAiCall = await getSceneActionsAiCall();
       const actions = await withGenerationRetry(
         () =>
-          generateSceneActions(safeOutline, content, actionsAiCall, {
+          generateSceneActions(pendingSceneOutline, content, actionsAiCall, {
             agents,
             languageDirective,
           }),
         {
           label: `scene ${index + 1}/${outlines.length} actions`,
+          ...(resumable ? { maxRetries: 1 } : {}),
           onRetry: (event) => reportSceneRetry('actions', event),
         },
       );
       log.info(`Scene "${safeOutline.title}": ${actions.length} actions`);
 
-      const sceneId = createSceneWithActions(safeOutline, content, actions, api);
+      const sceneId = createSceneWithActions(pendingSceneOutline, content, actions, api);
       if (!sceneId) {
-        log.warn(`Skipping scene "${safeOutline.title}" — scene creation failed`);
+        log.warn(`Skipping scene "${pendingSceneOutline.title}" — scene creation failed`);
+        if (resumable) {
+          throw new Error(`Scene assembly failed: ${pendingSceneOutline.title}`);
+        }
         continue;
       }
 
       generatedScenes += 1;
+      nextSceneIndex = index + 1;
       const progressEnd = 30 + Math.floor(((index + 1) / Math.max(outlines.length, 1)) * 60);
       await options.onProgress?.({
         step: 'generating_scenes',
@@ -755,6 +882,10 @@ export async function generateClassroom(
         scenesGenerated: generatedScenes,
         totalScenes: outlines.length,
       });
+
+      if (options.checkpointAfterEachScene) {
+        saveCheckpointAndPause('scene_content', nextSceneIndex);
+      }
     }
 
     const scenes = store.getState().scenes;
@@ -764,8 +895,28 @@ export async function generateClassroom(
       throw new Error('No scenes were generated');
     }
 
+    // Media and TTS are separate resumable phases. A fresh invocation only
+    // prepares the next phase; the following invocation performs it, keeping
+    // every Vercel request bounded even when a course has many assets.
+    const scenePhaseCompleted =
+      !resume ||
+      resume.phase === 'scenes' ||
+      resume.phase === 'scene_content' ||
+      resume.phase === 'scene_actions';
+    if (resumable && scenePhaseCompleted) {
+      if (input.enableImageGeneration || input.enableVideoGeneration) {
+        saveCheckpointAndPause('media', outlines.length);
+      }
+      if (resumable && input.enableTTS) {
+        saveCheckpointAndPause('tts', outlines.length);
+      }
+    }
+
     // Phase: Media generation (after all scenes generated)
-    if (input.enableImageGeneration || input.enableVideoGeneration) {
+    if (
+      (resume?.phase === 'media' || (!resume && !resumable)) &&
+      (input.enableImageGeneration || input.enableVideoGeneration)
+    ) {
       await options.onProgress?.({
         step: 'generating_media',
         progress: 90,
@@ -786,12 +937,16 @@ export async function generateClassroom(
       } catch (err) {
         log.warn('Media generation phase failed, continuing:', err);
       }
+
+      if (resumable && input.enableTTS) {
+        saveCheckpointAndPause('tts', outlines.length);
+      }
     }
 
     // Phase: TTS generation
     let ttsCoverage: ClassroomTtsCoverage | undefined;
     let ttsFailureWarning: string | undefined;
-    if (input.enableTTS) {
+    if (input.enableTTS && (!resume || resume.phase === 'tts')) {
       await options.onProgress?.({
         step: 'generating_tts',
         progress: 94,
@@ -836,9 +991,11 @@ export async function generateClassroom(
 
     // The id was reserved before media/TTS generation, so the process owns it and
     // this is an ordinary overwrite that replaces the placeholder.
-    persisted = await persistClassroom({ id: stageId, stage, scenes }, options.baseUrl, {
-      ownerId: options.ownerId,
-    });
+    persisted = await persistClassroom(
+      { id: stageId, stage, scenes },
+      options.baseUrl,
+      options.ownerId ? { ownerId: options.ownerId } : undefined,
+    );
 
     log.info(`Classroom persisted: ${persisted.id}, URL: ${persisted.url}`);
 
@@ -861,7 +1018,7 @@ export async function generateClassroom(
       ...(ttsWarning ? { warning: ttsWarning } : {}),
     };
   } finally {
-    if (!persisted) {
+    if (!persisted && !checkpointed) {
       await releaseClassroomReservation(stageId);
     }
   }

@@ -1,9 +1,14 @@
 import { createLogger } from '@/lib/logger';
-import { generateClassroom, type GenerateClassroomInput } from '@/lib/server/classroom-generation';
+import {
+  ClassroomGenerationCheckpointError,
+  generateClassroom,
+  type GenerateClassroomInput,
+} from '@/lib/server/classroom-generation';
 import {
   claimClassroomGenerationJob,
   markClassroomGenerationJobFailed,
   markClassroomGenerationJobSucceeded,
+  queueClassroomGenerationCheckpoint,
   updateClassroomGenerationJobProgress,
 } from '@/lib/server/classroom-job-store';
 
@@ -29,6 +34,9 @@ export function runClassroomGenerationJob(
       const result = await generateClassroom(input, {
         baseUrl,
         ownerId,
+        resume: claimed.workflow?.checkpoint,
+        checkpointAfterInitialization: !claimed.workflow?.checkpoint,
+        checkpointAfterEachScene: true,
         onProgress: async (progress) => {
           await updateClassroomGenerationJobProgress(jobId, progress);
         },
@@ -36,6 +44,10 @@ export function runClassroomGenerationJob(
 
       await markClassroomGenerationJobSucceeded(jobId, result);
     } catch (error) {
+      if (error instanceof ClassroomGenerationCheckpointError) {
+        await queueClassroomGenerationCheckpoint(jobId, error.checkpoint);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Classroom generation job ${jobId} failed:`, error);
       try {

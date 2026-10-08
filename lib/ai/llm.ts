@@ -21,6 +21,34 @@ import {
 } from '@/lib/ai/thinking-config';
 const log = createLogger('LLM');
 
+/** Stay below Vercel's five-minute function ceiling and fail while the caller
+ * can still persist a useful job checkpoint. The value is configurable for
+ * self-hosted deployments, but never allowed to reach the platform ceiling. */
+export const LLM_REQUEST_TIMEOUT_MS = (() => {
+  const configured = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '', 10);
+  if (Number.isFinite(configured) && configured >= 30_000) {
+    return Math.min(configured, 240_000);
+  }
+  return 220_000;
+})();
+
+function withLlmRequestTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function isAbortLike(error: unknown, seen = new Set<unknown>()): boolean {
+  if (!error || seen.has(error)) return false;
+  seen.add(error);
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return true;
+  }
+  if (typeof error !== 'object') return false;
+  const record = error as { name?: unknown; cause?: unknown; lastError?: unknown };
+  if (record.name === 'AbortError' || record.name === 'TimeoutError') return true;
+  return isAbortLike(record.cause, seen) || isAbortLike(record.lastError, seen);
+}
+
 // Re-export for external use
 export type { ThinkingConfig } from '@/lib/types/provider';
 
@@ -367,7 +395,13 @@ export async function callLLM<T extends GenerateTextParams>(
   > {
     try {
       const effectiveThinking = thinking ?? getGlobalThinkingConfig();
-      const injectedParams = injectProviderOptions(roundParams, effectiveThinking);
+      const injectedParams = injectProviderOptions(
+        {
+          ...roundParams,
+          abortSignal: withLlmRequestTimeout(roundParams.abortSignal),
+        },
+        effectiveThinking,
+      );
 
       // Wrap in thinkingContext so the custom fetch wrapper in providers.ts
       // can read the config and inject vendor-specific body params for
@@ -433,7 +467,7 @@ export async function callLLM<T extends GenerateTextParams>(
         );
         continue;
       }
-      if (allowFallback && shouldFallbackFor(round.error, undefined)) {
+      if (allowFallback && !isAbortLike(round.error) && shouldFallbackFor(round.error, undefined)) {
         triggerFallback = true;
       }
     } else {

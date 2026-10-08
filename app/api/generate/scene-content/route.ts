@@ -41,7 +41,7 @@ import {
 
 const log = createLogger('Scene Content API');
 
-export const maxDuration = 300;
+export const maxDuration = 240;
 
 /**
  * Aggregate budget for the WHOLE resolve-with-refill phase, reused from the

@@ -61,11 +61,35 @@ function messageForStatus(status: number): string {
   return 'Upstream provider rejected the request.';
 }
 
+function isTimeoutError(error: unknown, seen = new Set<unknown>()): boolean {
+  if (!error || seen.has(error)) return false;
+  seen.add(error);
+
+  if (
+    error instanceof Error &&
+    /timeout|timed out|function_invocation_timeout/i.test(error.message)
+  ) {
+    return true;
+  }
+  if (isRecord(error) && /timeout|timed out/i.test(String(error.name ?? ''))) return true;
+
+  if (!isRecord(error)) return false;
+  return isTimeoutError(error.cause, seen) || isTimeoutError(error.lastError, seen);
+}
+
 /**
  * Preserve a provider's HTTP semantics for client retry classification without
  * exposing provider response bodies, URLs, or credential-adjacent details.
  */
 export function llmApiError(error: unknown) {
+  if (isTimeoutError(error)) {
+    return apiError(
+      'GENERATION_TIMEOUT',
+      504,
+      '生成超时，请重试。若连续失败，请减少教材范围或稍后再试。',
+    );
+  }
+
   const status = statusFromError(error);
   if (status === undefined) {
     return apiError('INTERNAL_ERROR', 500, 'Scene generation failed. Please try again.');

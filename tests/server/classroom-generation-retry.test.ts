@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClassroomAlreadyExistsError } from '@/lib/server/classroom-storage';
-import type { GenerateClassroomInput } from '@/lib/server/classroom-generation';
+import {
+  ClassroomGenerationCheckpointError,
+  type GenerateClassroomInput,
+} from '@/lib/server/classroom-generation';
 
 const mocks = vi.hoisted(() => ({
   resolveModel: vi.fn(),
@@ -188,6 +191,61 @@ describe('classroom scene generation retries', () => {
     expect(progress.some((event) => event.message.includes('Retrying scene 1/1 content'))).toBe(
       true,
     );
+  });
+
+  it('checkpoints initialization, content, and actions as separate resumable steps', async () => {
+    const { generateClassroom } = await import('@/lib/server/classroom-generation');
+    const input = { requirement: 'Teach retry basics' } satisfies GenerateClassroomInput;
+    const options = {
+      baseUrl: 'http://localhost',
+      checkpointAfterInitialization: true,
+      checkpointAfterEachScene: true,
+    };
+
+    let initializationError: ClassroomGenerationCheckpointError;
+    try {
+      await generateClassroom(input, options);
+      throw new Error('expected initialization checkpoint');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClassroomGenerationCheckpointError);
+      initializationError = error as ClassroomGenerationCheckpointError;
+    }
+
+    expect(initializationError!.checkpoint.phase).toBe('scene_content');
+    expect(mocks.generateSceneContent).not.toHaveBeenCalled();
+    expect(mocks.releaseClassroomReservation).not.toHaveBeenCalled();
+
+    mocks.generateSceneContent.mockResolvedValue(slideContent);
+    let contentError: ClassroomGenerationCheckpointError;
+    try {
+      await generateClassroom(input, {
+        ...options,
+        resume: initializationError!.checkpoint,
+        checkpointAfterInitialization: false,
+      });
+      throw new Error('expected content checkpoint');
+    } catch (error) {
+      contentError = error as ClassroomGenerationCheckpointError;
+    }
+
+    expect(contentError!.checkpoint.phase).toBe('scene_actions');
+    expect(mocks.generateSceneActions).not.toHaveBeenCalled();
+
+    let actionsError: ClassroomGenerationCheckpointError;
+    try {
+      await generateClassroom(input, {
+        ...options,
+        resume: contentError!.checkpoint,
+        checkpointAfterInitialization: false,
+      });
+      throw new Error('expected actions checkpoint');
+    } catch (error) {
+      actionsError = error as ClassroomGenerationCheckpointError;
+    }
+
+    expect(actionsError!.checkpoint.phase).toBe('scene_content');
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(1);
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(1);
   });
 
   it('forwards classroom thinking config to scene retry LLM calls', async () => {

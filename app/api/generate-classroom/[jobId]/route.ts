@@ -3,6 +3,7 @@ import { apiError, apiSuccess } from '@/lib/server/api-response';
 import {
   isValidClassroomJobId,
   readClassroomGenerationJob,
+  updateClassroomGenerationJob,
 } from '@/lib/server/classroom-job-store';
 import { buildRequestOrigin } from '@/lib/server/classroom-storage';
 import { createLogger } from '@/lib/logger';
@@ -11,6 +12,7 @@ import { withRequestOwner } from '@/lib/server/identity/with-owner';
 const log = createLogger('ClassroomJob API');
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 240;
 
 export async function GET(req: NextRequest, context: { params: Promise<{ jobId: string }> }) {
   return withRequestOwner(req, async ({ ownerId }) => {
@@ -66,5 +68,55 @@ export async function GET(req: NextRequest, context: { params: Promise<{ jobId: 
         error instanceof Error ? error.message : String(error),
       );
     }
+  });
+}
+
+/** Retry a failed job from its last durable checkpoint. */
+export async function POST(req: NextRequest, context: { params: Promise<{ jobId: string }> }) {
+  return withRequestOwner(req, async ({ ownerId }) => {
+    const { jobId } = await context.params;
+    if (!isValidClassroomJobId(jobId)) {
+      return apiError('INVALID_REQUEST', 400, 'Invalid classroom generation job id');
+    }
+
+    const job = await readClassroomGenerationJob(jobId);
+    if (!job || (job.ownerId && job.ownerId !== ownerId)) {
+      return apiError('INVALID_REQUEST', 404, 'Classroom generation job not found');
+    }
+    if (job.status !== 'failed' || !job.input) {
+      return apiError('INVALID_REQUEST', 409, 'Only failed classroom jobs can be retried');
+    }
+
+    const queued = await updateClassroomGenerationJob(jobId, {
+      status: 'queued',
+      step:
+        job.workflow?.checkpoint.phase === 'media'
+          ? 'generating_media'
+          : job.workflow?.checkpoint.phase === 'tts'
+            ? 'generating_tts'
+            : 'queued',
+      progress: job.progress,
+      message: 'Classroom generation retry queued',
+      error: undefined,
+      completedAt: undefined,
+    });
+    const baseUrl = buildRequestOrigin(req);
+    after(async () => {
+      const { runClassroomGenerationJob } = await import('@/lib/server/classroom-job-runner');
+      await runClassroomGenerationJob(jobId, queued.input!, baseUrl, queued.ownerId);
+    });
+
+    return apiSuccess(
+      {
+        jobId,
+        status: queued.status,
+        step: queued.step,
+        progress: queued.progress,
+        message: queued.message,
+        pollUrl: `${baseUrl}/api/generate-classroom/${jobId}`,
+        pollIntervalMs: 5000,
+      },
+      202,
+    );
   });
 }
