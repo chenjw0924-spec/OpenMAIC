@@ -6,7 +6,7 @@ import { runClassroomGenerationJob } from '@/lib/server/classroom-job-runner';
 import { createClassroomGenerationJob } from '@/lib/server/classroom-job-store';
 import { buildRequestOrigin } from '@/lib/server/classroom-storage';
 import { createLogger } from '@/lib/logger';
-import { withRequestOwner } from '@/lib/server/identity/with-owner';
+import { withClassroomJobOwner } from '@/lib/server/classroom-job-response';
 
 const log = createLogger('GenerateClassroom API');
 
@@ -31,7 +31,7 @@ function isValidPdfContent(value: unknown): value is PdfContent {
 }
 
 export async function POST(req: NextRequest) {
-  return withRequestOwner(req, async ({ ownerId }) => {
+  return withClassroomJobOwner(req, async ({ ownerId }) => {
     let requirementSnippet: string | undefined;
     try {
       const rawBody = (await req.json()) as Partial<GenerateClassroomInput>;

@@ -7,7 +7,7 @@ import {
 } from '@/lib/server/classroom-job-store';
 import { buildRequestOrigin } from '@/lib/server/classroom-storage';
 import { createLogger } from '@/lib/logger';
-import { withRequestOwner } from '@/lib/server/identity/with-owner';
+import { withClassroomJobOwner } from '@/lib/server/classroom-job-response';
 
 const log = createLogger('ClassroomJob API');
 
@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 240;
 
 export async function GET(req: NextRequest, context: { params: Promise<{ jobId: string }> }) {
-  return withRequestOwner(req, async ({ ownerId }) => {
+  return withClassroomJobOwner(req, async ({ ownerId }) => {
     let resolvedJobId: string | undefined;
     try {
       const { jobId } = await context.params;
@@ -73,7 +73,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ jobId: 
 
 /** Retry a failed job from its last durable checkpoint. */
 export async function POST(req: NextRequest, context: { params: Promise<{ jobId: string }> }) {
-  return withRequestOwner(req, async ({ ownerId }) => {
+  return withClassroomJobOwner(req, async ({ ownerId }) => {
     const { jobId } = await context.params;
     if (!isValidClassroomJobId(jobId)) {
       return apiError('INVALID_REQUEST', 400, 'Invalid classroom generation job id');
